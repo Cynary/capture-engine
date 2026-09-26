@@ -23,6 +23,14 @@
   Fix: `ModuleReadVersionResource` reads RT_VERSION from the mapping (FindResource/LoadResource); all HMODULE
   version helpers in `dll_utils.h` use it. Side fact: from an unmanifested exe the kernel32 FILE read says 6.2
   (version lie), the mapping says 10.0.
+- Follow-up same day: user-confirmed the resize works WITHOUT CE. `logs/20260926_191350` (0.1.6838) and `_192017`
+  (overlay hidden + sharpen off): still [3,3,3]. Pointer scan found only raw pointers (47 in a vtable-less 32-byte
+  record ring in a private region; driver/runtime tracking), so it cannot identify counted holders. Added
+  `hook/common/backbuffer_reference_trace.{h,cpp}`: after every successful D3D12 resize, hooks the buffers' resource
+  vtable (QI/AddRef/Release) and the DXGI swapchain vtable GetBuffer (slot 9; nested refs inside GetBuffer belong to
+  its caller), tallies per return address for the registered buffers only; a refused resize logs
+  `BackBufferRefTrace: bbN <module>+rva acq= rel=` and `net references by module`. Hook DLL is pinned, so the
+  patched slots are never left dangling. Next repro: read those lines.
 - **0x4000 is UE's fatal assertion, not ensure()**: all three recorded 0x4000s preceded `appError ... Fatal error`.
   Renamed `kUe5AssertExceptionCode`; helper scope is now an enum `ExternalDumpScope {kRich,kStacks,kFatalAssert}`;
   `kFatalAssertDumpType` = stacks + handles (mutex owners) + indirectly referenced memory + memory info, no data segs.

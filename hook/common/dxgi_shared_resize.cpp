@@ -1,5 +1,6 @@
 #include "dxgi_shared_internal.h"
 #include "present_pacing_policy.h"
+#include "backbuffer_reference_trace.h"
 #include "resize_reference_holders.h"
 #include "resize_reference_probe.h"
 #include "swapchain_flag_policy.h"
@@ -115,6 +116,19 @@ void EndD3D12ResizeDiagnostics(const D3D12ResizePreparation& preparation, IDXGIS
                                UINT SwapChainFlags) {
     if (preparation.before.probed == 0) {
         return;
+    }
+    if (SUCCEEDED(hr)) {
+        // New buffers: count who takes and returns their references from here on.
+        // try_lock: a CE path that resizes while it owns the vtable lock must
+        // not deadlock on its own diagnostics.
+        std::unique_lock<std::mutex> vtableLock(g_SharedMutex, std::try_to_lock);
+        if (vtableLock.owns_lock()) {
+            BackBufferReferenceTrace_Track(pSwapChain, preparation.bufferCount, source);
+        } else {
+            HookLog("%s: back-buffer reference trace not re-armed - vtable lock busy", source);
+        }
+    } else {
+        BackBufferReferenceTrace_Log(pSwapChain, source);
     }
     static std::atomic<uint32_t> s_succeededLogs{0};
     static std::atomic<uint32_t> s_failedLogs{0};

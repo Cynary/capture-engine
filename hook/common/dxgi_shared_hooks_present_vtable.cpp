@@ -1,5 +1,6 @@
 #include "dxgi_shared_internal.h"
 #include "../wrappers/vtable_hook_policy.h"
+#include "backbuffer_reference_trace.h"
 
 // Swapchain Present/Present1/ResizeBuffers vtable-slot ownership: claim repair, detach for a
 // runtime handoff, and full teardown. Split out of dxgi_shared_hooks_present.cpp (which owns
@@ -226,6 +227,7 @@ void RemoveSwapchainVTableHooks() {
     dxgi_shared_oPresent1Bypass = nullptr;
 
     std::lock_guard<std::mutex> lock(g_SharedMutex);
+    BackBufferReferenceTrace_Uninstall();
     if (!dxgi_shared_s_hookedVTable)
         return;
     if (!IsReadableMemory(reinterpret_cast<const void*>(dxgi_shared_s_hookedVTable), 40 * sizeof(void*))) {
