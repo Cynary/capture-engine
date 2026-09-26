@@ -29,7 +29,8 @@ std::atomic<bool> g_ForceUnhandledDump{false};
 static std::atomic<bool> g_CrashTraceActive{false};
 static std::atomic<CrashExecutionFaultHandler> g_ExecutionFaultHandler{nullptr};
 static std::atomic<CrashPreDumpCallback> g_PreDumpCallback{nullptr};
-static std::atomic<bool (*)(const char*, bool, const ExternalDumpException*)> g_ExternalCrashDumpCapture{nullptr};
+static std::atomic<bool (*)(const char*, ce::crash_dump_policy::ExternalDumpScope, const ExternalDumpException*)>
+    g_ExternalCrashDumpCapture{nullptr};
 static std::atomic<bool (*)()> g_ForeignOverlayLoadedQuery{nullptr};
 static std::mutex g_TraceCrashMutex;
 // TraceCrash runs from a vectored exception handler, which Windows can re-enter
@@ -515,10 +516,10 @@ bool HasExternalCrashDumpCapture() {
     return g_ExternalCrashDumpCapture.load(std::memory_order_acquire) != nullptr;
 }
 
-bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint, bool stackOnly,
+bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint, ce::crash_dump_policy::ExternalDumpScope scope,
                                         const ExternalDumpException* exception) {
     auto capture = g_ExternalCrashDumpCapture.load(std::memory_order_acquire);
-    return capture && dumpFileNameHint && dumpFileNameHint[0] && capture(dumpFileNameHint, stackOnly, exception);
+    return capture && dumpFileNameHint && dumpFileNameHint[0] && capture(dumpFileNameHint, scope, exception);
 }
 
 bool IsForeignOverlayLoadedForCrashDump() {

@@ -1,5 +1,6 @@
 #include "dxgi_shared_internal.h"
 #include "present_pacing_policy.h"
+#include "resize_reference_holders.h"
 #include "resize_reference_probe.h"
 #include "swapchain_flag_policy.h"
 
@@ -129,11 +130,15 @@ void EndD3D12ResizeDiagnostics(const D3D12ResizePreparation& preparation, IDXGIS
                                            sizeof(afterCaptureRelease));
     }
     char after[128] = "n/a";
+    bool heldAfterFailure = false;
     if (FAILED(hr)) {
         // Still the old buffers: the probe shows whether the holder let go.
-        ce::resize_reference_probe::Format(ce::resize_reference_probe::Probe<ID3D12Resource>(
-                                               pSwapChain, preparation.bufferCount, __uuidof(ID3D12Resource)),
-                                           after, sizeof(after));
+        const auto afterReferences = ce::resize_reference_probe::Probe<ID3D12Resource>(
+            pSwapChain, preparation.bufferCount, __uuidof(ID3D12Resource));
+        ce::resize_reference_probe::Format(afterReferences, after, sizeof(after));
+        for (UINT i = 0; i < afterReferences.probed; ++i) {
+            heldAfterFailure |= afterReferences.heldByOthers[i] != 0;
+        }
     }
     HookLogImportant(
         "%s: D3D12 resize %s hr=0x%08lX sc=%p request(count=%u %ux%u fmt=%d flags=0x%X) buffers=%u "
@@ -142,6 +147,28 @@ void EndD3D12ResizeDiagnostics(const D3D12ResizePreparation& preparation, IDXGIS
         static_cast<int>(NewFormat), SwapChainFlags, preparation.bufferCount, before, afterCaptureRelease, after,
         preparation.capture, preparation.captureReleased ? preparation.captureRelease : "captureRelease(unbound)",
         GetCurrentThreadId(), logIndex + 1);
+
+    static std::atomic<bool> s_holdersScanned{false};
+    if (ce::resize_reference_holders::ShouldScanFailedResize(hr, heldAfterFailure,
+                                                             s_holdersScanned.load(std::memory_order_acquire)) &&
+        !s_holdersScanned.exchange(true, std::memory_order_acq_rel)) {
+        void* buffers[ce::resize_reference_holders::kMaxTargets] = {};
+        UINT bufferCount = 0;
+        const UINT wanted = preparation.bufferCount < ce::resize_reference_holders::kMaxTargets
+                                ? preparation.bufferCount
+                                : static_cast<UINT>(ce::resize_reference_holders::kMaxTargets);
+        for (; bufferCount < wanted; ++bufferCount) {
+            ID3D12Resource* buffer = nullptr;
+            if (FAILED(pSwapChain->GetBuffer(bufferCount, IID_PPV_ARGS(&buffer))) || !buffer) {
+                break;
+            }
+            buffers[bufferCount] = buffer;
+        }
+        LogBackBufferReferenceHolders(buffers, bufferCount, source);
+        for (UINT i = 0; i < bufferCount; ++i) {
+            static_cast<ID3D12Resource*>(buffers[i])->Release();
+        }
+    }
 }
 
 }  // namespace

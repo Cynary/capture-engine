@@ -109,7 +109,8 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         ExternalDumpException exception;
         exception.pointers = &params->pointers;
         exception.threadId = params->threadId;
-        if (CaptureCrashDumpWithExternalHelper(dumpFileName, false, &exception)) {
+        if (CaptureCrashDumpWithExternalHelper(dumpFileName, ce::crash_dump_policy::ExternalDumpScope::kRich,
+                                               &exception)) {
             TraceCrash("External helper captured the crash dump");
             g_DumpSuccessfullyWritten.store(true, std::memory_order_release);
             return 0;
@@ -340,9 +341,11 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
              callCount);
     TraceCrash(codeStr);
 
-    // UE5 ensure() assertion (0x4000): continuable, but UE5 may call
-    // TerminateProcess shortly after. Write a FAST MiniDumpNormal for
-    // diagnostics (<50 ms, ~100 KB) then let UE5's handler continue.
+    // Unreal assertion (0x4000): check()/appError. The engine's own crash
+    // reporter runs next and the process terminates itself with a non-crash
+    // exit code, which the pre-termination hooks deliberately do not dump, so
+    // this is the only CE dump of the failure. Write it, then let the engine's
+    // handler continue.
     if (action == ce::crash_dump_policy::FirstChanceAction::kQuickAssertDump) {
         // Read the dump directory with try_lock: the crashed thread may own the mutex.
         std::string dumpDir;
@@ -360,7 +363,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             char* baseName = strrchr(modName, '\\');
             baseName = baseName ? baseName + 1 : modName;
             char loc[512];
-            snprintf(loc, sizeof(loc), "UE5 ensure() in %s at 0x%p (offset 0x%llX)", baseName,
+            snprintf(loc, sizeof(loc), "Unreal assertion (fatal error path) raised in %s at 0x%p (offset 0x%llX)",
+                     baseName,
                      pExceptionPointers->ExceptionRecord->ExceptionAddress,
                      hMod ? (unsigned long long)((uintptr_t)pExceptionPointers->ExceptionRecord->ExceptionAddress -
                                                  (uintptr_t)hMod)
@@ -368,9 +372,10 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             TraceCrash(loc);
         }
 
-        // An ensure is continuable and some titles re-fire it every frame, so
-        // this path is budgeted: beyond the per-process limit the event is only
-        // logged instead of stalling the process for another MiniDumpWriteDump.
+        // A title that handles the assertion exception itself can raise it
+        // again, so this path is budgeted: beyond the per-process limit the
+        // event is only logged instead of stalling the process for another
+        // MiniDumpWriteDump.
         const uint32_t quickAssertDumpsWritten = g_QuickAssertDumpsWritten.fetch_add(1, std::memory_order_acq_rel);
         if (!ce::crash_dump_policy::ShouldWriteQuickAssertDump(quickAssertDumpsWritten)) {
             TraceCrash("Quick assert dump suppressed - the per-process assert dump limit is reached");
@@ -398,8 +403,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             ExternalDumpException exception;
             exception.pointers = pExceptionPointers;
             exception.threadId = GetCurrentThreadId();
-            if (CaptureCrashDumpWithExternalHelper(
-                    dumpFileName, ce::crash_dump_policy::kExternalQuickAssertDumpIsStackOnly, &exception)) {
+            if (CaptureCrashDumpWithExternalHelper(dumpFileName, ce::crash_dump_policy::kExternalQuickAssertDumpScope,
+                                                   &exception)) {
                 TraceCrash("External helper captured the quick assert dump");
                 return EXCEPTION_CONTINUE_SEARCH;
             }

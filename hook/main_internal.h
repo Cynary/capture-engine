@@ -264,7 +264,9 @@ std::string QuoteCommandLineArgument(const std::string& value);
 std::filesystem::path GetInstalledCaptureEnginePath();
 
 ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
-    const char* source, const char* dumpHint, bool stackOnly = false, const ExternalDumpException* exception = nullptr);
+    const char* source, const char* dumpHint,
+    ce::crash_dump_policy::ExternalDumpScope scope = ce::crash_dump_policy::ExternalDumpScope::kRich,
+    const ExternalDumpException* exception = nullptr);
 
 // Publishes the external-helper capture and foreign-overlay presence to the
 // shared crash handler so its dump worker never has to run an in-process dbghelp

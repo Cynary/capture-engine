@@ -1,6 +1,35 @@
 # llm-wiki Log
 
+### 2026-09-26 - Talos FSR FG resize fatal without recording; 50 s dump freeze; 0x4000 is UE's fatal assert
+
+- Session `logs/20260926_094906` (0.1.6837, no recording): `ResizeBuffers ... FAILED hr=0x887A0001
+  sc=<real FFX chain> before=[3,3,3] after=[3,3,3] capture(active=0 thisChain=0)`. **Refutes the entry below:**
+  capture is not the holder. [3,3,3] appears only once FSR FG has run on the chain (the two earlier resizes of the
+  same chain with FG never enabled probed [0,0,0]). Neither dump had heap (CE assert dump stack-only; the user's
+  manual dump was `MiniDumpWithDataSegs` only), so the holder is still unnamed. The earlier "081620 resize worked"
+  baseline is unproven: no probe existed then and UE logs no ResizeBuffers on success.
+- Noted but not causal-proven: every failing run injected early (CE DXGI factory wrapper created at startup, CE
+  preloaded `sl.dlss_g.dll`); the one "working" run injected late. The game's and npi `sl.*` DLLs are byte-identical.
+- Holder diagnostics: `hook/common/resize_reference_holders.{h,cpp}`. First refused D3D12 resize with foreign refs
+  -> reads all committed writable private/image memory via `ReadProcessMemory(self)` (skips WC/NOCACHE/guard/mapped,
+  skips its own buffer), logs every slot holding a back-buffer pointer with the nearest preceding code-image pointer
+  (vtable -> owning module) or `global:<module>`, then `slots by owner:`. dxgi/d3d12core owners include DXGI's own
+  bookkeeping. Next repro: read `ResizeReferenceHolders:` lines.
+- **50 s freeze = CE:** UE's crash reporter ran an in-process `MiniDumpWriteDump` (hooked by CE, passed through);
+  dbgcore suspended every thread while CE's hook thread was inside Steam's `LoadLibraryExW` hook
+  (`RefreshThirdPartyOverlayIdentityCache` -> `GetFileVersionInfoW(System32\d3d9.dll)`, triggered by the dbghelp
+  load notification), holding Steam's lock; dbgcore's per-module `GetFileVersionInfoSizeExW` then waited on it.
+  Proof: watchdog fired at 50.5 s against a 30 s timeout and the hook thread logged nothing until the same instant.
+  Fix: `ModuleReadVersionResource` reads RT_VERSION from the mapping (FindResource/LoadResource); all HMODULE
+  version helpers in `dll_utils.h` use it. Side fact: from an unmanifested exe the kernel32 FILE read says 6.2
+  (version lie), the mapping says 10.0.
+- **0x4000 is UE's fatal assertion, not ensure()**: all three recorded 0x4000s preceded `appError ... Fatal error`.
+  Renamed `kUe5AssertExceptionCode`; helper scope is now an enum `ExternalDumpScope {kRich,kStacks,kFatalAssert}`;
+  `kFatalAssertDumpType` = stacks + handles (mutex owners) + indirectly referenced memory + memory info, no data segs.
+
 ### 2026-09-26 - Talos resize fatal while recording under FSR FG: capture tied the back buffers
+
+- **Superseded by the entry above: capture is NOT the holder** (same [3,3,3] with capture unbound).
 
 - Sessions `logs/20260926_083506` and `090625`: resolution change during an FSR FG recording ->
   `SwapChain1->ResizeBuffers` `DXGI_ERROR_INVALID_CALL` -> Unreal appError fatal. The 0.1.6836 probe line:

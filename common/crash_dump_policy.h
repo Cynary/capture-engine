@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <string>
 
 namespace ce::crash_dump_policy {
@@ -43,26 +44,42 @@ inline constexpr MINIDUMP_TYPE kQuickAssertDumpType = static_cast<MINIDUMP_TYPE>
     MiniDumpWithDataSegs | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules | MiniDumpWithProcessThreadData |
     MiniDumpWithFullMemoryInfo | MiniDumpIgnoreInaccessibleMemory);
 
-// UE5 `ensure` is continuable and can fire in a storm (once per call site, and
-// some titles re-ensure every frame). Each assert dump costs the whole process
-// a synchronous MiniDumpWriteDump stall - the same ~61.6 s family as the rich
-// path when a foreign overlay hooks the loader/version APIs - and uncapped it
-// wrote another assert_*.dmp per ensure. The first few are worth keeping; after
-// that the event is logged to crash.log only.
+// A title that handles the assertion exception itself can raise it repeatedly.
+// Each assert dump costs the whole process a synchronous MiniDumpWriteDump
+// stall - the same ~61.6 s family as the rich path when a foreign overlay hooks
+// the loader/version APIs - and uncapped it wrote another assert_*.dmp per
+// event. The first few are worth keeping; after that the event is logged to
+// crash.log only.
 inline constexpr uint32_t kQuickAssertDumpPerProcessLimit = 3;
 
 inline bool ShouldWriteQuickAssertDump(uint32_t quickAssertDumpsAlreadyWritten) {
     return quickAssertDumpsAlreadyWritten < kQuickAssertDumpPerProcessLimit;
 }
 
-// The external helper writes the assert dump while every thread of the game is
-// suspended, so the dump's size IS the freeze, and the caller's wait timeout
-// cannot bound it (the waiting thread is suspended too). Without a scope the
-// helper wrote its rich crash type: Talos Reawakened's fatal-resize ensure
-// (logs/20260926_083506) produced 158 MB in 8276 ranges and froze the game for
-// 18 s against an 8 s timeout. An ensure is answered by its thread stacks and
-// the exception context, which the stack-only scope keeps at about a megabyte.
-inline constexpr bool kExternalQuickAssertDumpIsStackOnly = true;
+// What the external helper records. The helper writes while every thread of
+// the game is suspended, so the dump's size IS the freeze, and the caller's
+// wait timeout cannot bound it (the waiting thread is suspended too).
+enum class ExternalDumpScope : uint8_t {
+    kRich,         // kRichCrashDumpType: the crash dump
+    kStacks,       // kStackOnlyDumpType: a freeze the application explains itself
+    kFatalAssert,  // kFatalAssertDumpType: an application assertion it is about to die of
+};
+
+// Unreal's assertion exception (0x4000) is the fatal path - check(), appError,
+// a failed D3D call - and the process terminates itself right after it.
+// The rich type wrote 158 MB in 8276 ranges for Talos Reawakened's failed
+// ResizeBuffers and stood the game still for 18 s (logs/20260926_083506), almost
+// all of it the executable's data segments. Stacks alone (533 KB,
+// logs/20260926_094906) could not say which thread owned the lock the game then
+// hung on, nor what the stack's pointers referred to. Handles (with mutex
+// owners), the memory the stacks point into and the address-space map answer
+// both at a few megabytes; module data segments stay out.
+inline constexpr ExternalDumpScope kExternalQuickAssertDumpScope = ExternalDumpScope::kFatalAssert;
+
+inline constexpr MINIDUMP_TYPE kFatalAssertDumpType = static_cast<MINIDUMP_TYPE>(
+    MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules | MiniDumpWithHandleData |
+    MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithProcessThreadData | MiniDumpWithFullMemoryInfo |
+    MiniDumpIgnoreInaccessibleMemory);
 
 inline constexpr MINIDUMP_TYPE kRichFreezeDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
@@ -84,6 +101,42 @@ inline constexpr MINIDUMP_TYPE kStackOnlyDumpType =
                                MiniDumpIgnoreInaccessibleMemory);
 
 inline constexpr MINIDUMP_TYPE kMinimalDumpType = MiniDumpNormal;
+
+inline constexpr MINIDUMP_TYPE ExternalHelperDumpType(ExternalDumpScope scope) {
+    switch (scope) {
+        case ExternalDumpScope::kStacks:
+            return kStackOnlyDumpType;
+        case ExternalDumpScope::kFatalAssert:
+            return kFatalAssertDumpType;
+        case ExternalDumpScope::kRich:
+        default:
+            return kRichCrashDumpType;
+    }
+}
+
+// `--dump-helper-scope=` value; nullptr means the rich default, which predates
+// the argument and is what a helper that sees no argument writes.
+inline constexpr const char* ExternalDumpScopeArgument(ExternalDumpScope scope) {
+    switch (scope) {
+        case ExternalDumpScope::kStacks:
+            return "stacks";
+        case ExternalDumpScope::kFatalAssert:
+            return "assert";
+        case ExternalDumpScope::kRich:
+        default:
+            return nullptr;
+    }
+}
+
+inline ExternalDumpScope ParseExternalDumpScopeArgument(const wchar_t* value) {
+    if (value && wcscmp(value, L"stacks") == 0) {
+        return ExternalDumpScope::kStacks;
+    }
+    if (value && wcscmp(value, L"assert") == 0) {
+        return ExternalDumpScope::kFatalAssert;
+    }
+    return ExternalDumpScope::kRich;
+}
 
 inline constexpr char ToLowerAscii(char c) {
     return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
@@ -506,9 +559,13 @@ inline bool ShouldCapturePreTerminationDump(bool targetIsCurrentProcess, DWORD e
     return origin != TerminationOrigin::kPrimaryModule;
 }
 
-// UE5's ensure() macro raises this continuable code; the filter answers it with
-// its own fast assert dump instead of the worker path.
-inline constexpr DWORD kUe5EnsureExceptionCode = 0x00004000;
+// Unreal's assertion exception: check()/verify() failures and fatal errors
+// (appError, a failed D3D call) raise it right before the engine's own crash
+// reporter runs and the process terminates itself. It is not ensure(): every
+// recorded 0x4000 (Talos Reawakened, logs/20260926_083506, _090625, _094906)
+// was followed by "appError called: Fatal error" in the game's own log. The
+// filter answers it with its own assert dump instead of the worker path.
+inline constexpr DWORD kUe5AssertExceptionCode = 0x00004000;
 
 // Every Windows exception code carries NTSTATUS severity in its top two bits.
 // Only severity 0b11 (error) codes are faults that terminate a thread when
@@ -572,7 +629,7 @@ enum class FirstChanceAction : uint8_t {
     kIgnore,
     kRecordFault,      // remember the context; dump only if the process dies of it
     kDumpNow,          // inherently fatal, or the unhandled filter asked for it
-    kQuickAssertDump,  // UE5 ensure(): the small synchronous assert dump
+    kQuickAssertDump,  // Unreal assertion (0x4000): the assert dump, then the engine's own reporter
 };
 
 inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump, bool debuggerPresent) {
@@ -587,7 +644,7 @@ inline FirstChanceAction ClassifyFirstChanceException(DWORD code, bool forceDump
         case 0xE06D7363UL:  // MSVC C++ EH - an unhandled one reaches the top-level filter
         case 0x20474343UL:  // GCC/clang C++ EH (" GCC")
             return FirstChanceAction::kIgnore;
-        case kUe5EnsureExceptionCode:
+        case kUe5AssertExceptionCode:
             return FirstChanceAction::kQuickAssertDump;
         case static_cast<DWORD>(EXCEPTION_BREAKPOINT):
             // A first-chance STATUS_BREAKPOINT is recorded first, exactly like a

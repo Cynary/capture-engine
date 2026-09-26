@@ -67,10 +67,13 @@ int CountFilesWithPrefix(const std::filesystem::path& dir, const std::string& pr
 
 int g_ExternalCaptureCalls = 0;
 std::vector<std::string> g_ExternalCaptureHints;
+std::vector<policy::ExternalDumpScope> g_ExternalCaptureScopes;
 
-bool RecordExternalCapture(const char* dumpFileNameHint, bool, const ExternalDumpException*) {
+bool RecordExternalCapture(const char* dumpFileNameHint, policy::ExternalDumpScope scope,
+                           const ExternalDumpException*) {
     ++g_ExternalCaptureCalls;
     g_ExternalCaptureHints.emplace_back(dumpFileNameHint ? dumpFileNameHint : "");
+    g_ExternalCaptureScopes.push_back(scope);
     return true;
 }
 
@@ -131,14 +134,15 @@ TEST_F(CrashOutputTruthTest, TraceCrashMasksTheWindowsAccountComponent) {
     EXPECT_NE(log.find("assert_20260924_1.dmp"), std::string::npos) << log;
 }
 
-// The UE5 ensure() "quick assert" dump ran in-process, synchronously, uncapped
-// and without the foreign-overlay guard the rich path has - with Steam/Social
-// overlays loaded that is the measured ~61.6 s per-MiniDumpWriteDump stall, and
-// UE5 `ensure` can fire repeatedly. The dump must go through the external
-// helper under a foreign overlay, and stop entirely after the per-process cap.
+// The Unreal assertion "quick assert" dump ran in-process, synchronously,
+// uncapped and without the foreign-overlay guard the rich path has - with
+// Steam/Social overlays loaded that is the measured ~61.6 s per-MiniDumpWriteDump
+// stall. The dump must go through the external helper under a foreign overlay,
+// with the fatal-assert scope, and stop entirely after the per-process cap.
 TEST_F(CrashOutputTruthTest, QuickAssertDumpsRespectTheForeignOverlayGuardAndPerProcessCap) {
     g_ExternalCaptureCalls = 0;
     g_ExternalCaptureHints.clear();
+    g_ExternalCaptureScopes.clear();
     CrashDumpEnvironmentHooks hooks;
     hooks.captureWithExternalHelper = &RecordExternalCapture;
     hooks.foreignOverlayLoaded = &ForeignOverlayLoadedStub;
@@ -148,7 +152,7 @@ TEST_F(CrashOutputTruthTest, QuickAssertDumpsRespectTheForeignOverlayGuardAndPer
     for (uint32_t i = 0; i < kEvents; ++i) {
         EXCEPTION_RECORD record = {};
         CONTEXT context = {};
-        EXCEPTION_POINTERS pointers = MakeSyntheticException(record, context, policy::kUe5EnsureExceptionCode);
+        EXCEPTION_POINTERS pointers = MakeSyntheticException(record, context, policy::kUe5AssertExceptionCode);
         EXPECT_EQ(CrashHandlerExceptionFilterForTesting(&pointers), EXCEPTION_CONTINUE_SEARCH);
     }
 
@@ -158,6 +162,9 @@ TEST_F(CrashOutputTruthTest, QuickAssertDumpsRespectTheForeignOverlayGuardAndPer
     EXPECT_EQ(g_ExternalCaptureCalls, static_cast<int>(policy::kQuickAssertDumpPerProcessLimit));
     for (const std::string& hint : g_ExternalCaptureHints) {
         EXPECT_EQ(hint.rfind("assert_", 0), 0u) << hint;
+    }
+    for (const policy::ExternalDumpScope scope : g_ExternalCaptureScopes) {
+        EXPECT_EQ(scope, policy::ExternalDumpScope::kFatalAssert);
     }
     EXPECT_EQ(CountFilesWithPrefix(dir_, "assert_"), 0);
 
@@ -253,8 +260,8 @@ TEST(CrashOutputTruthSourceTest, QuickAssertDumpBranchIsCappedAndGuardedBeforeIt
 
     EXPECT_NE(body.find("ce::privacy::CollapsePathForLog(dumpPath)"), std::string::npos)
         << "the dump path crash.log names must not expose the private directory layout";
-    EXPECT_NE(body.find("ce::crash_dump_policy::kExternalQuickAssertDumpIsStackOnly"), std::string::npos)
-        << "the helper-written assert dump must ask for the stack-only scope, not the rich crash type";
+    EXPECT_NE(body.find("ce::crash_dump_policy::kExternalQuickAssertDumpScope"), std::string::npos)
+        << "the helper-written assert dump must ask for the fatal-assert scope, not the rich crash type";
 }
 
 // Source side of the breakpoint policy: no per-run immediate-dump budget may

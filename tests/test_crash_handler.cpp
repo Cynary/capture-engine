@@ -20,12 +20,13 @@ ULONG_PTR g_LastFaultAddr = 0;
 
 int g_ExternalCaptureCallCount = 0;
 std::string g_LastExternalCaptureHint;
-bool g_LastExternalCaptureStackOnly = false;
+ce::crash_dump_policy::ExternalDumpScope g_LastExternalCaptureScope = ce::crash_dump_policy::ExternalDumpScope::kRich;
 
-bool RecordExternalCapture(const char* dumpFileNameHint, bool stackOnly, const ExternalDumpException*) {
+bool RecordExternalCapture(const char* dumpFileNameHint, ce::crash_dump_policy::ExternalDumpScope scope,
+                           const ExternalDumpException*) {
     ++g_ExternalCaptureCallCount;
     g_LastExternalCaptureHint = dumpFileNameHint ? dumpFileNameHint : "";
-    g_LastExternalCaptureStackOnly = stackOnly;
+    g_LastExternalCaptureScope = scope;
     return true;
 }
 
@@ -142,17 +143,22 @@ TEST(CrashHandlerTest, CrashDumpEnvironmentHooksAreOptionalAndAnswerConservative
     EXPECT_EQ(g_ExternalCaptureCallCount, 1);
     EXPECT_EQ(g_LastExternalCaptureHint, "crash_test.dmp");
     // The default is the dump every caller got before the scope existed.
-    EXPECT_FALSE(g_LastExternalCaptureStackOnly);
+    EXPECT_EQ(g_LastExternalCaptureScope, ce::crash_dump_policy::ExternalDumpScope::kRich);
 
-    EXPECT_TRUE(CaptureCrashDumpWithExternalHelper("freeze_test.dmp", /*stackOnly=*/true));
+    EXPECT_TRUE(CaptureCrashDumpWithExternalHelper("freeze_test.dmp", ce::crash_dump_policy::ExternalDumpScope::kStacks));
     EXPECT_EQ(g_ExternalCaptureCallCount, 2);
-    EXPECT_TRUE(g_LastExternalCaptureStackOnly);
+    EXPECT_EQ(g_LastExternalCaptureScope, ce::crash_dump_policy::ExternalDumpScope::kStacks);
+
+    EXPECT_TRUE(
+        CaptureCrashDumpWithExternalHelper("assert_test.dmp", ce::crash_dump_policy::ExternalDumpScope::kFatalAssert));
+    EXPECT_EQ(g_ExternalCaptureCallCount, 3);
+    EXPECT_EQ(g_LastExternalCaptureScope, ce::crash_dump_policy::ExternalDumpScope::kFatalAssert);
 
     // An empty hint would make the helper write an unnamed artifact; refuse it
     // instead of launching the helper.
     EXPECT_FALSE(CaptureCrashDumpWithExternalHelper(""));
     EXPECT_FALSE(CaptureCrashDumpWithExternalHelper(nullptr));
-    EXPECT_EQ(g_ExternalCaptureCallCount, 2);
+    EXPECT_EQ(g_ExternalCaptureCallCount, 3);
 
     RegisterCrashDumpEnvironmentHooks(CrashDumpEnvironmentHooks{});
 }
@@ -706,8 +712,8 @@ TEST(FreezeWatchdogPolicyTest, ADialogOwnedByTheRenderThreadExplainsItsOwnFreeze
 
 // The scope only reaches the dump writer through the helper's command line, so
 // the argument the hook emits and the argument the helper parses have to stay
-// the same string.
-TEST(FreezeWatchdogPolicyTest, TheStackOnlyScopeReachesTheExternalDumpHelper) {
+// the same string, and each parsed scope has to select its own dump type.
+TEST(FreezeWatchdogPolicyTest, EveryDumpScopeReachesTheExternalDumpHelper) {
     const std::string hookSide = ce::test_source::ReadLogicalSource(
         std::filesystem::current_path() / "hook" / "main_fatal_dump.cpp");
     const std::string helperSide = ce::test_source::ReadLogicalSource(
@@ -715,7 +721,23 @@ TEST(FreezeWatchdogPolicyTest, TheStackOnlyScopeReachesTheExternalDumpHelper) {
     ASSERT_FALSE(hookSide.empty());
     ASSERT_FALSE(helperSide.empty());
 
-    EXPECT_NE(hookSide.find("--dump-helper-scope=stacks"), std::string::npos);
+    EXPECT_NE(hookSide.find("--dump-helper-scope="), std::string::npos);
+    EXPECT_NE(hookSide.find("ExternalDumpScopeArgument(scope)"), std::string::npos);
     EXPECT_NE(helperSide.find("L\"--dump-helper-scope=\""), std::string::npos);
-    EXPECT_NE(helperSide.find("kStackOnlyDumpType"), std::string::npos);
+    EXPECT_NE(helperSide.find("ParseExternalDumpScopeArgument(scopeArg)"), std::string::npos);
+    EXPECT_NE(helperSide.find("ExternalHelperDumpType(scope)"), std::string::npos);
+
+    namespace policy = ce::crash_dump_policy;
+    for (const auto scope :
+         {policy::ExternalDumpScope::kRich, policy::ExternalDumpScope::kStacks, policy::ExternalDumpScope::kFatalAssert}) {
+        const char* argument = policy::ExternalDumpScopeArgument(scope);
+        const std::wstring wide = argument ? std::wstring(argument, argument + strlen(argument)) : std::wstring();
+        EXPECT_EQ(policy::ParseExternalDumpScopeArgument(argument ? wide.c_str() : nullptr), scope)
+            << (argument ? argument : "(none)");
+    }
+    EXPECT_EQ(policy::ExternalHelperDumpType(policy::ExternalDumpScope::kRich), policy::kRichCrashDumpType);
+    EXPECT_EQ(policy::ExternalHelperDumpType(policy::ExternalDumpScope::kStacks), policy::kStackOnlyDumpType);
+    EXPECT_EQ(policy::ExternalHelperDumpType(policy::ExternalDumpScope::kFatalAssert), policy::kFatalAssertDumpType);
+    // An argument this helper does not know is the rich dump, never a smaller one.
+    EXPECT_EQ(policy::ParseExternalDumpScopeArgument(L"something-newer"), policy::ExternalDumpScope::kRich);
 }

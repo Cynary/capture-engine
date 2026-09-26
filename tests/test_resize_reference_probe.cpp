@@ -127,10 +127,12 @@ TEST(ResizeReferenceProbeTest, CaptureStagesLogABaselineThenOnlyCopiesThatAddRef
     EXPECT_TRUE(probe::ShouldLogCaptureStageReferences(500, executeHolds, 256));
 }
 
-// Talos Reawakened + FSR FG (logs/20260926_090625): with CE's capture copying
-// from the chain every back buffer carried three extra references and the
-// game's resize died of DXGI_ERROR_INVALID_CALL. Every resize detour must let
-// the capture go before it forwards, and log the back buffers after that.
+// Talos Reawakened + FSR FG (logs/20260926_090625): every back buffer carried
+// three extra references and the game's resize died of DXGI_ERROR_INVALID_CALL.
+// The same [3,3,3] recurred with capture not bound to the chain at all
+// (logs/20260926_094906), so capture is not that holder - but a capture that
+// is copying from a chain still has to let it go before the resize forwards,
+// and the back buffers are logged after that.
 TEST(ResizeReferenceProbeTest, EveryResizeDetourReleasesTheCaptureBeforeForwarding) {
     const std::string resize = ReadSource("hook/common/dxgi_shared_resize.cpp");
     ASSERT_FALSE(resize.empty());

@@ -159,7 +159,9 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
             "FreezeWatchdog: Capturing the freeze dump with the external helper so this process keeps running "
             "(hint=%s targetTid=%lu stackOnly=%d foreignOverlay=%d)",
             dumpFileName.c_str(), dumpTargetTid, stackOnly ? 1 : 0, foreignOverlayLoaded ? 1 : 0);
-        if (CaptureCrashDumpWithExternalHelper(dumpFileName.c_str(), stackOnly)) {
+        if (CaptureCrashDumpWithExternalHelper(dumpFileName.c_str(),
+                                               stackOnly ? ce::crash_dump_policy::ExternalDumpScope::kStacks
+                                                         : ce::crash_dump_policy::ExternalDumpScope::kRich)) {
             HookLogImportant(
                 "FreezeWatchdog: External helper captured the freeze dump (hint=%s targetTid=%lu stackOnly=%d)",
                 dumpFileName.c_str(), dumpTargetTid, stackOnly ? 1 : 0);

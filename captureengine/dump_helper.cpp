@@ -117,8 +117,9 @@ int RunDumpHelperFromCommandLine() {
     }
     // Only the caller knows whether the process's memory is worth recording. A
     // freeze the application explains itself - its own modal dialog on the
-    // render thread - asks for stacks; everything else gets the rich dump.
-    const bool stackOnlyScope = scopeArg && wcscmp(scopeArg, L"stacks") == 0;
+    // render thread - asks for stacks, an application assertion for the fatal
+    // assert scope; everything else gets the rich dump.
+    const auto scope = ce::crash_dump_policy::ParseExternalDumpScopeArgument(scopeArg);
 
     const std::string dumpDir = WideToUtf8(dirArg);
     const std::string dumpHint = WideToUtf8(hintArg && hintArg[0] ? hintArg : L"fatal_exit_external_helper.dmp");
@@ -161,8 +162,7 @@ int RunDumpHelperFromCommandLine() {
         callbackParam = &callbackInformation;
     }
 
-    const MINIDUMP_TYPE dumpType = stackOnlyScope ? ce::crash_dump_policy::kStackOnlyDumpType
-                                                  : ce::crash_dump_policy::kRichCrashDumpType;
+    const MINIDUMP_TYPE dumpType = ce::crash_dump_policy::ExternalHelperDumpType(scope);
     MINIDUMP_EXCEPTION_INFORMATION exceptionInformation = {};
     PMINIDUMP_EXCEPTION_INFORMATION exceptionParam = nullptr;
     if (exceptionPointersAddress != 0 && exceptionThreadId != 0) {
@@ -177,8 +177,11 @@ int RunDumpHelperFromCommandLine() {
     // cannot read it, so a bad pointer costs the stream, never the dump.
     const bool wroteDump = WriteSupplementalCrashDump(dumpHint.c_str(), targetProcess, targetPid, dumpType,
                                                       exceptionParam, nullptr, callbackParam);
-    if (stackOnlyScope) {
+    if (scope == ce::crash_dump_policy::ExternalDumpScope::kStacks) {
         TraceCrash("DumpHelper: Stack-only scope requested - thread stacks, thread info and modules only");
+    } else if (scope == ce::crash_dump_policy::ExternalDumpScope::kFatalAssert) {
+        TraceCrash("DumpHelper: Fatal-assert scope requested - stacks, handles, stack-referenced memory and the "
+                   "memory map; no module data segments");
     }
 
     if (wow64Stacks.Active()) {

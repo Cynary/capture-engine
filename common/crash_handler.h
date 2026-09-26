@@ -6,6 +6,8 @@
 // clang-format on
 #include <string>
 
+#include "crash_dump_policy.h"
+
 // Installs the unhandled exception filter to generate Minidumps
 void InstallCrashHandler();
 
@@ -76,11 +78,11 @@ struct ExternalDumpException {
 struct CrashDumpEnvironmentHooks {
     // Writes a dump of THIS process from an external helper process under
     // `dumpFileNameHint`. Returns true only when a dump was actually written.
-    // `stackOnly` asks the helper for thread stacks, thread info and modules
-    // instead of process memory; a caller that has no reason to shrink the
-    // dump passes false and gets exactly the dump it always got. `exception`
-    // (optional) makes the dump's exception stream name the faulting context.
-    bool (*captureWithExternalHelper)(const char* dumpFileNameHint, bool stackOnly,
+    // `scope` selects what the helper records (crash_dump_policy.h,
+    // ExternalDumpScope); a caller that has no reason to shrink the dump passes
+    // kRich and gets exactly the dump it always got. `exception` (optional)
+    // makes the dump's exception stream name the faulting context.
+    bool (*captureWithExternalHelper)(const char* dumpFileNameHint, ce::crash_dump_policy::ExternalDumpScope scope,
                                       const ExternalDumpException* exception) = nullptr;
     // True when a third-party overlay module is loaded in this process.
     bool (*foreignOverlayLoaded)() = nullptr;
@@ -92,8 +94,10 @@ void RegisterCrashDumpEnvironmentHooks(const CrashDumpEnvironmentHooks& hooks);
 // the freeze watchdog). Each answers conservatively (false) when the hook
 // module registered nothing.
 bool HasExternalCrashDumpCapture();
-bool CaptureCrashDumpWithExternalHelper(const char* dumpFileNameHint, bool stackOnly = false,
-                                        const ExternalDumpException* exception = nullptr);
+bool CaptureCrashDumpWithExternalHelper(
+    const char* dumpFileNameHint,
+    ce::crash_dump_policy::ExternalDumpScope scope = ce::crash_dump_policy::ExternalDumpScope::kRich,
+    const ExternalDumpException* exception = nullptr);
 bool IsForeignOverlayLoadedForCrashDump();
 
 // Writes an additional CE-owned dump for externally handled crashes when we still

@@ -396,7 +396,7 @@ TEST(CrashDumpPolicyTest, InherentlyFatalCodesStillDumpImmediately) {
               Action::kDumpNow);
     EXPECT_EQ(policy::ClassifyFirstChanceException(0xC0000374UL, false, false), Action::kDumpNow);  // heap corruption
     EXPECT_EQ(policy::ClassifyFirstChanceException(0xC000041DUL, false, false), Action::kDumpNow);
-    EXPECT_EQ(policy::ClassifyFirstChanceException(policy::kUe5EnsureExceptionCode, false, false),
+    EXPECT_EQ(policy::ClassifyFirstChanceException(policy::kUe5AssertExceptionCode, false, false),
               Action::kQuickAssertDump);
     EXPECT_EQ(policy::ClassifyFirstChanceException(EXCEPTION_BREAKPOINT, false, true), Action::kIgnore);
 }
@@ -480,10 +480,27 @@ TEST(CrashDumpPolicyTest, QuickAssertDumpsAreBudgetedPerProcess) {
     EXPECT_FALSE(policy::ShouldWriteQuickAssertDump(1000));
 }
 
-// The helper suspends the whole game while it writes; an ensure dump must not
-// be the rich crash type (158 MB / 18 s freeze in logs/20260926_083506).
-TEST(CrashDumpPolicyTest, ExternalQuickAssertDumpsAreStackOnly) {
-    EXPECT_TRUE(policy::kExternalQuickAssertDumpIsStackOnly);
+// 0x4000 is Unreal's fatal assertion, and its dump is the only CE record of the
+// failure. The rich type spent 158 MB / 18 s on the executable's data segments
+// (logs/20260926_083506); stacks alone (533 KB, logs/20260926_094906) could not
+// name the owner of the lock the game then hung on for 50 s, nor any object a
+// stack pointed at. Handles, stack-referenced memory and the memory map answer
+// both without the data segments.
+TEST(CrashDumpPolicyTest, ExternalQuickAssertDumpsCarryHandlesAndReferencedMemoryButNoDataSegments) {
+    EXPECT_EQ(policy::kExternalQuickAssertDumpScope, policy::ExternalDumpScope::kFatalAssert);
+    const auto flags = policy::ExternalHelperDumpType(policy::kExternalQuickAssertDumpScope);
+
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpWithThreadInfo));
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpWithUnloadedModules));
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpWithHandleData));
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpWithIndirectlyReferencedMemory));
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpWithFullMemoryInfo));
+    EXPECT_TRUE(HasDumpFlag(flags, MiniDumpIgnoreInaccessibleMemory));
+
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithDataSegs));
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpScanMemory));
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithFullMemory));
+    EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithPrivateReadWriteMemory));
 }
 
 TEST(CrashDumpPolicyTest, ExtractPrintableMessageFindsTextAmongBinaryNoise) {

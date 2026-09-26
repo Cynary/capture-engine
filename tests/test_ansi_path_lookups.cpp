@@ -110,6 +110,50 @@ TEST(AnsiPathLookupTest, LoadedModuleProbesUseTheModuleHandle) {
     EXPECT_EQ(ModuleFileMajorVersion(nullptr), ModuleFileMajorVersion(GetModuleHandleW(nullptr)));
 }
 
+// A loaded module's version comes out of its own mapping, and it must be the
+// same answer the file gives: the file read goes through
+// LoadLibraryEx(AS_DATAFILE), the export Steam's overlay serializes behind a
+// lock, and CE's hook thread holding that lock while the game's in-process
+// MiniDumpWriteDump suspended everything froze Talos Reawakened for 50 s
+// (logs/20260926_094906).
+TEST(AnsiPathLookupTest, LoadedModuleVersionIsReadFromTheMappingNotTheFile) {
+    const HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    ASSERT_NE(kernel32, nullptr);
+    const std::string mapped = ModuleReadVersionResource(kernel32);
+    ASSERT_FALSE(mapped.empty());
+
+    // The mapping carries the image's real version. The file read of kernel32
+    // from this unmanifested test executable returned 6.2 - the compatibility
+    // version lie - so the two are compared by strings, not by number.
+    uint32_t mappedParts[3] = {};
+    ASSERT_TRUE(VersionResourceFileVersionParts(mapped, &mappedParts[0], &mappedParts[1], &mappedParts[2]));
+    EXPECT_GE(mappedParts[0], 10u);
+    EXPECT_EQ(ModuleFileMajorVersion(kernel32), mappedParts[0]);
+    EXPECT_TRUE(VersionResourceStringContains(mapped, "windows"));
+    EXPECT_EQ(VersionResourceStringContains(mapped, "windows"),
+              DllVersionStringContainsW(DllModulePathW(kernel32).c_str(), "windows"));
+    EXPECT_FALSE(VersionResourceStringContains(mapped, "dxvk"));
+
+    EXPECT_TRUE(ModuleReadVersionResource(nullptr).empty());
+    EXPECT_FALSE(VersionResourceStringContains(std::string(), "windows"));
+    EXPECT_FALSE(VersionResourceFileVersionParts(std::string(), &mappedParts[0], nullptr, nullptr));
+
+    // The HMODULE forms never derive a path to re-open.
+    const std::string dllUtils = ReadSource("hook/common/dll_utils.h");
+    for (const char* form : {"static inline bool ModuleVersionStringContains(HMODULE module",
+                             "static inline bool ModuleFileVersionParts(HMODULE module"}) {
+        const std::string body = Between(dllUtils, form, "\n}\n");
+        ASSERT_FALSE(body.empty()) << form;
+        EXPECT_NE(body.find("ModuleReadVersionResource(module)"), std::string::npos) << form;
+        EXPECT_EQ(body.find("DllModulePathW("), std::string::npos) << form;
+        EXPECT_EQ(body.find("DllReadVersionResourceW("), std::string::npos) << form;
+    }
+    const std::string reader = Between(dllUtils, "static inline std::string ModuleReadVersionResource(", "\n}\n");
+    ASSERT_FALSE(reader.empty());
+    EXPECT_EQ(reader.find("GetFileVersionInfo"), std::string::npos);
+    EXPECT_EQ(reader.find("LoadLibrary"), std::string::npos);
+}
+
 // Source policy: the hook-side lookups that open, probe or derive a path from
 // the module/game folder stay off GetModuleFileNameA. Base-name attribution in
 // log lines is deliberately left narrow (the file name itself is ASCII).

@@ -227,7 +227,8 @@ std::filesystem::path GetInstalledCaptureEnginePath() {
 }
 
 ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
-    const char* source, const char* dumpHint, bool stackOnly, const ExternalDumpException* exception) {
+    const char* source, const char* dumpHint, ce::crash_dump_policy::ExternalDumpScope scope,
+    const ExternalDumpException* exception) {
   const std::string dumpDir = GetCrashDumpDirectory();
   if (dumpDir.empty() || !dumpHint || dumpHint[0] == '\0') {
     return ExternalPreTerminationDumpResult::kUnavailable;
@@ -250,8 +251,9 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
   commandLine += QuoteCommandLineArgument(dumpDir);
   commandLine += " --dump-helper-hint=";
   commandLine += QuoteCommandLineArgument(dumpHint);
-  if (stackOnly) {
-    commandLine += " --dump-helper-scope=stacks";
+  if (const char* scopeArgument = ce::crash_dump_policy::ExternalDumpScopeArgument(scope)) {
+    commandLine += " --dump-helper-scope=";
+    commandLine += scopeArgument;
   }
 #ifdef _WIN64
   // The helper is x64 and reads the pointers straight out of this process
@@ -333,9 +335,10 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
 // APIs (that is the ~62 s all-threads-suspended freeze from session
 // 20260817_052857), so hand it the same external helper the fatal-exit path
 // already prefers, plus the overlay presence it has to decide on.
-bool CaptureCrashDumpWithExternalHelperForCrashHandler(const char* dumpFileNameHint, bool stackOnly,
+bool CaptureCrashDumpWithExternalHelperForCrashHandler(const char* dumpFileNameHint,
+                                                      ce::crash_dump_policy::ExternalDumpScope scope,
                                                       const ExternalDumpException* exception) {
-  return TryCapturePreTerminationDumpWithExternalHelper("crash-handler", dumpFileNameHint, stackOnly, exception) ==
+  return TryCapturePreTerminationDumpWithExternalHelper("crash-handler", dumpFileNameHint, scope, exception) ==
          ExternalPreTerminationDumpResult::kCaptured;
 }
 
@@ -597,7 +600,8 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   externalException.pointers = &pointers;
   externalException.threadId = GetCurrentThreadId();
   const ExternalPreTerminationDumpResult externalDumpResult =
-      TryCapturePreTerminationDumpWithExternalHelper(source, dumpHint, false, &externalException);
+      TryCapturePreTerminationDumpWithExternalHelper(source, dumpHint, ce::crash_dump_policy::ExternalDumpScope::kRich,
+                                                     &externalException);
   bool wroteDump = externalDumpResult == ExternalPreTerminationDumpResult::kCaptured;
   if (!wroteDump && externalDumpResult != ExternalPreTerminationDumpResult::kTimedOut &&
       ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(

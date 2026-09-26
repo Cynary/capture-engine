@@ -51,6 +51,38 @@ static inline std::wstring DllPathToWide(const char* dllPath) {
     return wide;
 }
 
+// The version resource of an image that is already mapped, read out of the
+// mapping itself. GetFileVersionInfo re-opens the file through
+// LoadLibraryEx(AS_DATAFILE), which is exactly the call a foreign overlay hooks
+// (Steam's gameoverlayrenderer64 serializes it behind its own lock). CE's hook
+// thread was inside that lock when Talos Reawakened's crash reporter began an
+// in-process MiniDumpWriteDump, which suspends every other thread and then asks
+// the same hook for each module's version: the game stood still for 50 s
+// (logs/20260926_094906). A loaded module never needs the file: the resource is
+// in its mapping, and FindResource/LoadResource do not go through the loader
+// exports an overlay hooks.
+//
+// The copy is twice the resource size, the room GetFileVersionInfo leaves after
+// the block for VerQueryValue's own bookkeeping.
+static inline std::string ModuleReadVersionResource(HMODULE module) {
+    if (!module) {
+        return {};
+    }
+    HRSRC info = FindResourceW(module, MAKEINTRESOURCEW(VS_VERSION_INFO), MAKEINTRESOURCEW(16) /* RT_VERSION */);
+    if (!info) {
+        return {};
+    }
+    const DWORD size = SizeofResource(module, info);
+    HGLOBAL loaded = size != 0 ? LoadResource(module, info) : nullptr;
+    const void* data = loaded ? LockResource(loaded) : nullptr;
+    if (!data) {
+        return {};
+    }
+    std::string buf(static_cast<size_t>(size) * 2, '\0');
+    memcpy(&buf[0], data, size);
+    return buf;
+}
+
 // `module`'s image path in UTF-16; empty on failure.
 static inline std::wstring DllModulePathW(HMODULE module) {
     wchar_t path[MAX_PATH] = {};
@@ -71,9 +103,8 @@ static inline std::wstring DllModulePathW(HMODULE module) {
 // Witcher 3's sl.interposer reports 1/0/0 against a StringFileInfo of 1.5.6.0 -
 // so this is sound for generation and for 2.x versions, but never for pinning a
 // specific 1.x minor.
-static inline bool DllFileVersionPartsW(const wchar_t* dllPath, uint32_t* outMajor, uint32_t* outMinor,
-                                        uint32_t* outBuild) {
-    const std::string buf = DllReadVersionResourceW(dllPath);
+static inline bool VersionResourceFileVersionParts(const std::string& buf, uint32_t* outMajor, uint32_t* outMinor,
+                                                   uint32_t* outBuild) {
     if (buf.empty()) {
         return false;
     }
@@ -95,6 +126,11 @@ static inline bool DllFileVersionPartsW(const wchar_t* dllPath, uint32_t* outMaj
     return true;
 }
 
+static inline bool DllFileVersionPartsW(const wchar_t* dllPath, uint32_t* outMajor, uint32_t* outMinor,
+                                        uint32_t* outBuild) {
+    return VersionResourceFileVersionParts(DllReadVersionResourceW(dllPath), outMajor, outMinor, outBuild);
+}
+
 static inline bool DllFileVersionParts(const char* dllPath, uint32_t* outMajor, uint32_t* outMinor,
                                        uint32_t* outBuild) {
     return DllFileVersionPartsW(DllPathToWide(dllPath).c_str(), outMajor, outMinor, outBuild);
@@ -102,7 +138,7 @@ static inline bool DllFileVersionParts(const char* dllPath, uint32_t* outMajor, 
 
 static inline bool ModuleFileVersionParts(HMODULE module, uint32_t* outMajor, uint32_t* outMinor,
                                           uint32_t* outBuild) {
-    return DllFileVersionPartsW(DllModulePathW(module).c_str(), outMajor, outMinor, outBuild);
+    return VersionResourceFileVersionParts(ModuleReadVersionResource(module), outMajor, outMinor, outBuild);
 }
 
 // Major field of the file's VS_FIXEDFILEINFO version, or 0 when the file has no
@@ -119,11 +155,10 @@ static inline uint32_t ModuleFileMajorVersion(HMODULE module) {
     return ModuleFileVersionParts(module, &major, nullptr, nullptr) ? major : 0;
 }
 
-// Returns true if any version-resource string field of the DLL at dllPath
-// contains needle (ASCII, case-insensitive). Used to fingerprint DXVK ("dxvk"),
-// VKD3D-Proton ("vkd3d") and third-party proxies beyond a mere path check.
-static inline bool DllVersionStringContainsW(const wchar_t* dllPath, const char* needle) {
-    const std::string buf = DllReadVersionResourceW(dllPath);
+// Returns true if any version-resource string field in `buf` contains needle
+// (ASCII, case-insensitive). Used to fingerprint DXVK ("dxvk"), VKD3D-Proton
+// ("vkd3d") and third-party proxies beyond a mere path check.
+static inline bool VersionResourceStringContains(const std::string& buf, const char* needle) {
     if (buf.empty() || !needle || !needle[0]) {
         return false;
     }
@@ -168,12 +203,17 @@ static inline bool DllVersionStringContainsW(const wchar_t* dllPath, const char*
     return false;
 }
 
+static inline bool DllVersionStringContainsW(const wchar_t* dllPath, const char* needle) {
+    return VersionResourceStringContains(DllReadVersionResourceW(dllPath), needle);
+}
+
 static inline bool DllVersionStringContains(const char* dllPath, const char* needle) {
     return DllVersionStringContainsW(DllPathToWide(dllPath).c_str(), needle);
 }
 
+// A loaded module's own mapping answers; see ModuleReadVersionResource.
 static inline bool ModuleVersionStringContains(HMODULE module, const char* needle) {
-    return DllVersionStringContainsW(DllModulePathW(module).c_str(), needle);
+    return VersionResourceStringContains(ModuleReadVersionResource(module), needle);
 }
 
 // Whether `module` was loaded from the System32 directory.
