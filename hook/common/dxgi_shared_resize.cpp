@@ -187,7 +187,9 @@ void EndD3D12ResizeDiagnostics(const D3D12ResizePreparation& preparation, IDXGIS
 
 }  // namespace
 
-// Predecessors of the reconcile-only ResizeBuffers claim. Kept separate from the
+// Trampolines of the reconcile-only ResizeBuffers body hooks on dxgi's own
+// functions (the vtable slots stay pristine; see
+// InstallResizeReconciliationHooks). Kept separate from the
 // full DX11 resize detour: the only thing CE owes an application swapchain it
 // otherwise leaves alone is that the flags it added at creation stay invisible,
 // and running the whole resize pipeline for that would change behaviour far

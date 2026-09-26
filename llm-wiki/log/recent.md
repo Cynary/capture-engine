@@ -31,6 +31,16 @@
   its caller), tallies per return address for the registered buffers only; a refused resize logs
   `BackBufferRefTrace: bbN <module>+rva acq= rel=` and `net references by module`. Hook DLL is pinned, so the
   patched slots are never left dangling. Next repro: read those lines.
+- **ROOT CAUSE (logs/20260926_192858, 0.1.6839 trace):** `gameoverlayrenderer64.dll+0x76396 acq=1 rel=0` on each
+  real back buffer; AMD FSR, D3D12Core and CE balanced. D3D12 swapchain buffers share ONE refcount across the chain
+  (trace baselines `[5,4,3,2,1,0]`), so `[3,3,3]` = 3 refs total = Steam's one per buffer. Steam hooks swapchains
+  by rewriting vtable slots (strings: "Hooking vtable for swap chain", `DXGISwapChain_ResizeBuffers`, "points to
+  another module, skipping hooks", "clobbering real VTable function from another object, ignoring"); CE's
+  `InstallResizeReconciliationHooks` (e07c3222, Strange Brigade flag fix) had claimed slots 13/39 at bootstrap, so
+  Steam skipped ResizeBuffers and never released. Fix: reconciliation now inline-patches dxgi's
+  `CDXGISwapChain::ResizeBuffers/ResizeBuffers1` bodies (only if the slot points into dxgi.dll) and leaves the
+  slots pristine; Steam's slot hook runs first and reaches CE via the original. Rule: **never occupy a DXGI
+  swapchain vtable slot a slot-hooking overlay needs** (Present already followed it). Hardware run pending.
 - **0x4000 is UE's fatal assertion, not ensure()**: all three recorded 0x4000s preceded `appError ... Fatal error`.
   Renamed `kUe5AssertExceptionCode`; helper scope is now an enum `ExternalDumpScope {kRich,kStacks,kFatalAssert}`;
   `kFatalAssertDumpType` = stacks + handles (mutex owners) + indirectly referenced memory + memory info, no data segs.

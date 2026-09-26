@@ -273,6 +273,18 @@ bool ClaimSwapchainVTableSlot(void** vtable, size_t index, void* detour, Functio
 }
 }
 
+namespace {
+// Published before the body patch becomes reachable, so the detour can always
+// forward (it fails the call without a predecessor).
+void PublishResizeReconcileTrampoline(void* trampoline, void*) {
+    DXGIShared::dxgi_shared_oResizeBuffersReconcile = reinterpret_cast<PFN_ResizeBuffers>(trampoline);
+}
+
+void PublishResize1ReconcileTrampoline(void* trampoline, void*) {
+    DXGIShared::dxgi_shared_oResizeBuffers1Reconcile = reinterpret_cast<PFN_ResizeBuffers1>(trampoline);
+}
+}  // namespace
+
 namespace DXGIShared {
 // CE adds DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT to the
 // application's creation descriptor for `backbuffer_count`, and DXGI then
@@ -314,27 +326,55 @@ bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* so
         return true;
     }
 
-    DWORD oldProtect;
-    if (!VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        HookLogImportant("DXGIShared::InstallResizeReconciliationHooks: VirtualProtect failed (source=%s)",
-                         source ? source : "unknown");
+    // The slots themselves stay pristine: CE patches the dxgi functions they point
+    // at instead. The Steam overlay hooks a swapchain by rewriting these vtable
+    // slots and skips every slot that already points into another module - so a
+    // CE detour in slot 13 made Steam never see ResizeBuffers, never release the
+    // one reference it holds on each back buffer, and every resize of a chain
+    // Steam drew on failed with DXGI_ERROR_INVALID_CALL (Talos Reawakened + FSR
+    // FG, logs/20260926_192858: gameoverlayrenderer64 acq=1 rel=0 per buffer).
+    // With the patch in the function body, Steam's slot hook runs first and still
+    // reaches CE through the original function.
+    void* const resizeTarget = *reinterpret_cast<void* volatile*>(&vtable[13]);
+    void* const resize1Target = *reinterpret_cast<void* volatile*>(&vtable[39]);
+    const HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
+    const auto inDxgi = [dxgi](void* address) {
+        HMODULE owner = nullptr;
+        return dxgi && address &&
+               GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                  reinterpret_cast<LPCWSTR>(address), &owner) &&
+               owner == dxgi;
+    };
+    if (!inDxgi(resizeTarget)) {
+        HookLogImportant(
+            "DXGIShared::InstallResizeReconciliationHooks: ResizeBuffers slot %p is not dxgi's own function (another "
+            "component owns it) — reconciliation UNAVAILABLE, backbuffer_count will NOT add the waitable object "
+            "(source=%s vtable=%p)",
+            resizeTarget, source ? source : "unknown", vtable);
         return false;
     }
 
-    const bool resizeClaimed = ClaimSwapchainVTableSlot(vtable, 13, (void*)DetourResizeBuffersReconcileOnly,
-                                                       &dxgi_shared_oResizeBuffersReconcile, "ResizeBuffers");
-    if (resizeClaimed) {
+    void* trampoline = nullptr;
+    const bool resizeHooked =
+        InlineHook::InstallPublished(resizeTarget, reinterpret_cast<void*>(DetourResizeBuffersReconcileOnly),
+                                     &trampoline, PublishResizeReconcileTrampoline, nullptr);
+    if (resizeHooked) {
         dxgi_shared_s_resizeHookedVTable = vtable;
-        ClaimSwapchainVTableSlot(vtable, 39, (void*)DetourResizeBuffers1ReconcileOnly,
-                                 &dxgi_shared_oResizeBuffers1Reconcile, "ResizeBuffers1");
+        void* trampoline1 = nullptr;
+        if (inDxgi(resize1Target) &&
+            !InlineHook::InstallPublished(resize1Target, reinterpret_cast<void*>(DetourResizeBuffers1ReconcileOnly),
+                                          &trampoline1, PublishResize1ReconcileTrampoline, nullptr)) {
+            HookLogImportant("DXGIShared::InstallResizeReconciliationHooks: ResizeBuffers1 body hook at %p failed",
+                             resize1Target);
+        }
     }
-
-    VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), oldProtect, &oldProtect);
     HookLogImportant(
-        "DXGIShared::InstallResizeReconciliationHooks: resize flag reconciliation %s (source=%s vtable=%p) — "
-        "backbuffer_count may%s add the waitable object to application swapchains",
-        resizeClaimed ? "ready" : "UNAVAILABLE", source ? source : "unknown", vtable, resizeClaimed ? "" : " NOT");
-    return resizeClaimed;
+        "DXGIShared::InstallResizeReconciliationHooks: resize flag reconciliation %s via dxgi function-body hooks "
+        "(source=%s vtable=%p ResizeBuffers=%p ResizeBuffers1=%p; vtable slots left pristine for slot-hooking "
+        "overlays) — backbuffer_count may%s add the waitable object to application swapchains",
+        resizeHooked ? "ready" : "UNAVAILABLE", source ? source : "unknown", vtable, resizeTarget, resize1Target,
+        resizeHooked ? "" : " NOT");
+    return resizeHooked;
 }
 
 bool ReconcilesApplicationResizeFlags() {

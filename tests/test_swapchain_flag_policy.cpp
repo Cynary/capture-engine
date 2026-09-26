@@ -228,8 +228,34 @@ TEST(SwapchainFlagPolicySourceTest, ResizePathsPreserveAnImplicitBufferCount) {
     EXPECT_NE(wrapper.find("if (BufferCount == 0)"), std::string::npos);
 }
 
-// vtable[13] is CE's own detour once the reconciliation claim is installed, so
-// a "call the original through the vtable" shortcut recurses forever.
+// The Steam overlay hooks a swapchain by rewriting its vtable slots and skips
+// every slot that already points into another module ("points to another
+// module, skipping hooks"). A CE detour in the ResizeBuffers slot therefore cost
+// Steam its resize handling: it kept one reference on each back buffer and every
+// resize of a chain it drew on failed with DXGI_ERROR_INVALID_CALL (Talos
+// Reawakened + FSR FG, logs/20260926_192858: gameoverlayrenderer64 acq=1 rel=0
+// per buffer; works without CE). The reconciliation patches dxgi's function
+// bodies and leaves slots 13 and 39 untouched.
+TEST(SwapchainFlagPolicySourceTest, ResizeReconciliationLeavesTheVTableSlotsToSlotHookingOverlays) {
+    const std::string hooks = ReadSource("hook/common/dxgi_shared_hooks.cpp");
+    const size_t begin = hooks.find("bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain");
+    ASSERT_NE(begin, std::string::npos);
+    const std::string body = hooks.substr(begin, hooks.find("\n}\n", begin) - begin);
+    EXPECT_EQ(body.find("ClaimSwapchainVTableSlot("), std::string::npos)
+        << "a CE detour in the slot hides ResizeBuffers from Steam's vtable hook";
+    EXPECT_EQ(body.find("VirtualProtect("), std::string::npos) << "the slots are only read";
+    EXPECT_NE(body.find("InlineHook::InstallPublished(resizeTarget"), std::string::npos);
+    EXPECT_NE(body.find("InlineHook::InstallPublished(resize1Target"), std::string::npos);
+    // Only dxgi's own function is patched; a slot another component already
+    // owns is left alone and reconciliation reports itself unavailable.
+    const size_t guard = body.find("if (!inDxgi(resizeTarget))");
+    ASSERT_NE(guard, std::string::npos);
+    EXPECT_LT(guard, body.find("InlineHook::InstallPublished(resizeTarget"));
+}
+
+// A "call the original through the vtable" shortcut in a resize detour would
+// re-enter the chain it is part of; the detours forward to their saved
+// predecessors only.
 TEST(SwapchainFlagPolicySourceTest, ResizeDetoursNeverReenterTheirOwnVTableSlot) {
     const std::string shared = ReadSource("hook/common/dxgi_shared_resize.cpp");
     ASSERT_FALSE(shared.empty());
