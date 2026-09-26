@@ -12,6 +12,7 @@ namespace {
 using ce::dx12_overlay_policy::ShouldRegisterCommandQueueFromExecuteCommandLists;
 using ce::dx12_overlay_policy::ShouldTransparentForwardNativeFSRCallbackEcl;
 using ce::dx12_overlay_policy::ShouldAdoptDiscoveredCommandQueue;
+using ce::dx12_overlay_policy::IsApplicationRenderedPresentForCapture;
 
 TEST(Dx12EclQueueRegistrationPolicyTest, SameDeviceAuxiliaryExecutionNeverReplacesEstablishedQueue) {
     EXPECT_FALSE(ShouldAdoptDiscoveredCommandQueue(true, true, true, true, true));
@@ -123,6 +124,49 @@ TEST(Dx12EclQueueRegistrationPolicyTest, ExecuteCommandListsDetourUsesThePolicyA
     ASSERT_NE(eclCostAccounting, std::string::npos);
     EXPECT_LT(transparentForward, eclCostAccounting)
         << "callback-owned native FSR must bypass hot-path ECL diagnostics and accounting";
+}
+
+// Talos + FSR FG (logs/20260926_081620): the transparent route counted no
+// command lists, so every Present looked generated, ProcessFrame never captured,
+// and the recording sat in its preparation phase until it was cancelled.
+TEST(Dx12EclQueueRegistrationPolicyTest, CallbackVerdictDecidesCaptureWhereTheTransparentRouteCountsNothing) {
+    EXPECT_TRUE(IsApplicationRenderedPresentForCapture(/*eclCountedNoSubmissions=*/true,
+                                                       /*callbackVerdictKnown=*/true,
+                                                       /*callbackSaysGenerated=*/false));
+    EXPECT_FALSE(IsApplicationRenderedPresentForCapture(true, true, true));
+    // The callback is exact, so it also wins when a stray submission was counted
+    // before a generated frame.
+    EXPECT_FALSE(IsApplicationRenderedPresentForCapture(false, true, true));
+    EXPECT_TRUE(IsApplicationRenderedPresentForCapture(false, true, false));
+}
+
+TEST(Dx12EclQueueRegistrationPolicyTest, WithoutACallbackVerdictTheCommandListCountStillDecides) {
+    EXPECT_TRUE(IsApplicationRenderedPresentForCapture(false, false, false));
+    EXPECT_FALSE(IsApplicationRenderedPresentForCapture(true, false, false));
+    // An unknown verdict carries no generated bit worth reading.
+    EXPECT_TRUE(IsApplicationRenderedPresentForCapture(false, false, true));
+    EXPECT_FALSE(IsApplicationRenderedPresentForCapture(true, false, true));
+}
+
+// Both ProcessFrame entry points must consume the verdict beside the count and
+// decide capture through the policy; the plain `!isInterpolatedFrame` gate is
+// what starved callback-owned FSR recordings.
+TEST(Dx12EclQueueRegistrationPolicyTest, ProcessFrameCaptureUsesTheCallbackVerdict) {
+    const std::string process = ReadSource("hook/apis/dx12_hook_process.cpp");
+    size_t consumed = 0;
+    for (size_t at = process.find("ConsumePresentFrameVerdict()"); at != std::string::npos;
+         at = process.find("ConsumePresentFrameVerdict()", at + 1)) {
+        ++consumed;
+    }
+    EXPECT_EQ(consumed, 2u);
+    size_t decided = 0;
+    for (size_t at = process.find("IsApplicationRenderedPresentForCapture(count, callbackVerdict)");
+         at != std::string::npos;
+         at = process.find("IsApplicationRenderedPresentForCapture(count, callbackVerdict)", at + 1)) {
+        ++decided;
+    }
+    EXPECT_EQ(decided, 2u);
+    EXPECT_EQ(process.find("bool processCapture = !isInterpolatedFrame"), std::string::npos);
 }
 
 }  // namespace

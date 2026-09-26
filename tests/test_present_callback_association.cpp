@@ -111,3 +111,59 @@ TEST_F(PresentCallbackAssociationTest, ConcurrentProducersAndReaderNeverYieldTor
     b.join();
     EXPECT_EQ(torn.load(), 0);
 }
+
+TEST_F(PresentCallbackAssociationTest, ThePresentAfterACallbackCarriesItsVerdictExactlyOnce) {
+    Frame(1'000'000, 1'003'000, false);
+    PresentFrameVerdict verdict = ConsumePresentFrameVerdict();
+    EXPECT_TRUE(verdict.known);
+    EXPECT_FALSE(verdict.generated);
+    // Consumed: nothing left for a later Present to inherit.
+    EXPECT_FALSE(ConsumePresentFrameVerdict().known);
+
+    Frame(1'011'000, 1'014'000, true);
+    verdict = ConsumePresentFrameVerdict();
+    EXPECT_TRUE(verdict.known);
+    EXPECT_TRUE(verdict.generated);
+}
+
+TEST_F(PresentCallbackAssociationTest, APresentWithoutACallbackHasNoVerdict) {
+    NotePresentEntry(1'003'000);
+    EXPECT_FALSE(ConsumePresentFrameVerdict().known);
+}
+
+TEST_F(PresentCallbackAssociationTest, ANestedPresentEntryKeepsTheOuterPresentsVerdict) {
+    // A Present re-entering CE's detour inside the runtime's Present stages no
+    // callback of its own and must not erase the frame's verdict.
+    Frame(1'000'000, 1'003'000, false);
+    NotePresentEntry(1'003'200);
+    const PresentFrameVerdict verdict = ConsumePresentFrameVerdict();
+    EXPECT_TRUE(verdict.known);
+    EXPECT_FALSE(verdict.generated);
+}
+
+TEST_F(PresentCallbackAssociationTest, AnUnconsumedVerdictNeverOutlivesTheNextCallback) {
+    // A Present that skipped ProcessFrame leaves its verdict behind; the next
+    // frame's callback retires it before its own Present commits a new one.
+    Frame(1'000'000, 1'003'000, false);
+    NoteCallbackEnd(1'011'000, true);
+    EXPECT_FALSE(ConsumePresentFrameVerdict().known);
+    NotePresentEntry(1'014'000);
+    const PresentFrameVerdict verdict = ConsumePresentFrameVerdict();
+    EXPECT_TRUE(verdict.known);
+    EXPECT_TRUE(verdict.generated);
+}
+
+TEST_F(PresentCallbackAssociationTest, ResetInvalidatesACommittedVerdict) {
+    Frame(1'000'000, 1'003'000, false);
+    Reset();
+    EXPECT_FALSE(ConsumePresentFrameVerdict().known);
+}
+
+TEST_F(PresentCallbackAssociationTest, AVerdictBelongsOnlyToThePresentingThread) {
+    Frame(1'000'000, 1'003'000, false);
+    bool otherThreadSawVerdict = true;
+    std::thread other([&]() { otherThreadSawVerdict = ConsumePresentFrameVerdict().known; });
+    other.join();
+    EXPECT_FALSE(otherThreadSawVerdict);
+    EXPECT_TRUE(ConsumePresentFrameVerdict().known);
+}

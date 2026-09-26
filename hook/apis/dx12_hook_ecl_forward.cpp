@@ -82,4 +82,26 @@ void TransparentNativeFSRCallback(ID3D12CommandQueue* queue, UINT numCommandList
     target(queue, numCommandLists, commandLists);
 }
 
+bool IsApplicationRenderedPresentForCapture(int eclSubmissionCount,
+                                            const present_association::PresentFrameVerdict& verdict) {
+    const bool eclCountedNoSubmissions = eclSubmissionCount == 0;
+    const bool applicationFrame = dx12_overlay_policy::IsApplicationRenderedPresentForCapture(
+        eclCountedNoSubmissions, verdict.known, verdict.generated);
+    if (verdict.known && applicationFrame == eclCountedNoSubmissions) {
+        // Expected on every Present while the transparent route counts nothing;
+        // anywhere else it means the count and the runtime disagree.
+        static std::atomic<uint64_t> s_overruleCount{0};
+        const uint64_t overrules = s_overruleCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (overrules <= 5 || (overrules % 3000) == 0) {
+            HookLogImportant(
+                "DX12: Present callback verdict decides base capture over the command-list count "
+                "(callback=%s eclLists=%d bridgeExpected=%d capture=%d overrules=%llu tid=0x%04X)",
+                verdict.generated ? "generated" : "application", eclSubmissionCount,
+                dx12_hook_g_FFXPresentCallbackBridgeExpected.load(std::memory_order_acquire) ? 1 : 0,
+                applicationFrame ? 1 : 0, static_cast<unsigned long long>(overrules), GetCurrentThreadId());
+        }
+    }
+    return applicationFrame;
+}
+
 }  // namespace ce::dx12_ecl_forward

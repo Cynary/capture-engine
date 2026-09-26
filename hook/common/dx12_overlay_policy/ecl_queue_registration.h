@@ -67,4 +67,15 @@ inline bool ShouldTransparentForwardNativeFSRCallbackEcl(bool fsrApiActive, bool
            !postSLActive && !insideCEOverlaySubmission;
 }
 
+// Base inject capture records application-rendered frames only, and otherwise
+// tells them from generated ones by whether the game submitted command lists
+// since the previous Present. The transparent route above counts nothing, so
+// there every Present looked generated and a recording never received a frame.
+// The present callback's own isGeneratedFrame for the Present it precedes
+// (ce::present_association) is exact, so it decides whenever it is known.
+inline bool IsApplicationRenderedPresentForCapture(bool eclCountedNoSubmissions, bool callbackVerdictKnown,
+                                                   bool callbackSaysGenerated) {
+    return callbackVerdictKnown ? !callbackSaysGenerated : !eclCountedNoSubmissions;
+}
+
 }  // namespace ce::dx12_overlay_policy

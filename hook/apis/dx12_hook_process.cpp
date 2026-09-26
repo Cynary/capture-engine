@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_process_session.h"
+#include "dx12_hook_ecl_forward.h"
 
 namespace {
 void PublishD3D12UseFromPresentedSwapchain(IDXGISwapChain* swapChain) {
@@ -47,12 +48,14 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
         return;
     }
     const int count = dx12_hook_g_CommandListsExecutedThisFrame.exchange(0);
+    const auto callbackVerdict = ce::present_association::ConsumePresentFrameVerdict();
     ++dx12_hook_g_FGDebugFrameCount;
     g_FGCompat.RecordFrame(count);
     const bool isInterpolatedFrame = (count == 0);
     if (applicationSourcePresent && !isInterpolatedFrame)
         DX12_ObserveApplicationSourcePresentTiming();
-    bool processCapture = !isInterpolatedFrame && !DX12_ShouldUseStreamlineFinalOutputCapture();
+    bool processCapture = ce::dx12_ecl_forward::IsApplicationRenderedPresentForCapture(count, callbackVerdict) &&
+                          !DX12_ShouldUseStreamlineFinalOutputCapture();
     SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
     const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(screenshotShm);
@@ -318,6 +321,9 @@ if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
     return;
 }
 int count = dx12_hook_g_CommandListsExecutedThisFrame.exchange(0);
+// Consumed beside the count it stands in for, so a Present that returns early
+// below cannot leave its verdict for a later Present on this thread.
+const auto callbackVerdict = ce::present_association::ConsumePresentFrameVerdict();
 ++dx12_hook_g_FGDebugFrameCount;
 g_FGCompat.RecordFrame(count);
 const char* fsrHeuristicBlockedReason = nullptr;
@@ -720,8 +726,8 @@ if (!isInterpolatedFrame &&
     sc3->Release();
     return;
 }
-bool processCapture = !isInterpolatedFrame && !protectedOfficialFFXStartupOverlayOnly &&
-                      !DX12_ShouldUseStreamlineFinalOutputCapture();
+bool processCapture = ce::dx12_ecl_forward::IsApplicationRenderedPresentForCapture(count, callbackVerdict) &&
+                      !protectedOfficialFFXStartupOverlayOnly && !DX12_ShouldUseStreamlineFinalOutputCapture();
 
 SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
 OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);

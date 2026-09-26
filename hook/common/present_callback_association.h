@@ -51,4 +51,19 @@ bool Find(int64_t presentStartUs, Association& out);
 // to a callback from after it.
 void Reset();
 
+// What the callback said about the frame the Present now running on this
+// thread carries. The runtime calls the callback and then Present for the same
+// frame on the same thread, so its isGeneratedFrame is an exact real/generated
+// verdict for that Present, not an inference.
+struct PresentFrameVerdict {
+    bool known = false;
+    bool generated = false;
+};
+
+// Returns the verdict NotePresentEntry committed for this thread's current
+// Present, and clears it so no later Present can inherit it. Unknown when no
+// callback preceded the Present on this thread, when it was already consumed,
+// or when Reset() ran in between.
+PresentFrameVerdict ConsumePresentFrameVerdict();
+
 }  // namespace ce::present_association

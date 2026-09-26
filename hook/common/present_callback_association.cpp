@@ -30,12 +30,20 @@ thread_local int64_t stagedCallbackEndUs = 0;
 thread_local bool stagedGenerated = false;
 thread_local uint64_t stagedGeneration = 0;
 
+// The committed callback's verdict for the Present now running on this thread.
+thread_local bool verdictPending = false;
+thread_local bool verdictGenerated = false;
+thread_local uint64_t verdictGeneration = 0;
+
 }  // namespace
 
 void NoteCallbackEnd(int64_t callbackEndUs, bool generated) {
     stagedCallbackEndUs = callbackEndUs;
     stagedGenerated = generated;
     stagedGeneration = generation.load(std::memory_order_acquire);
+    // A new callback means the previous frame's Present is over, whether or
+    // not anything consumed its verdict.
+    verdictPending = false;
 }
 
 void NotePresentEntry(int64_t presentEntryUs) {
@@ -57,6 +65,19 @@ void NotePresentEntry(int64_t presentEntryUs) {
     slot.generated = stagedGenerated;
     slot.sequence.store(sequence + 2, std::memory_order_release);
     stagedCallbackEndUs = 0;
+    verdictPending = true;
+    verdictGenerated = stagedGenerated;
+    verdictGeneration = stagedGeneration;
+}
+
+PresentFrameVerdict ConsumePresentFrameVerdict() {
+    PresentFrameVerdict verdict;
+    if (verdictPending && verdictGeneration == generation.load(std::memory_order_acquire)) {
+        verdict.known = true;
+        verdict.generated = verdictGenerated;
+    }
+    verdictPending = false;
+    return verdict;
 }
 
 bool Find(int64_t presentStartUs, Association& out) {

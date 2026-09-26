@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-09-26 - Talos FSR FG recording stuck in preparation: capture starved by transparent ECL
+
+- Session `logs/20260926_081620` (Talos Reawakened, FSR FG via app present callback, 0.1.6834): r0002 never went
+  live (`Stop accepted as pre-live cancellation ... liveFrames=0`); media published encoder KMT textures, but the
+  ring `wIdx` stayed 7023 for 38 s. The hook logged `Capture state changed: ENABLED` and no capture line after
+  it; every present logged `cmdLists=0 isReal=0 consReal=0`.
+- Cause (since 34f48aff, 2026-09-06): `ShouldTransparentForwardNativeFSRCallbackEcl` forwards ECL and returns
+  before `dx12_hook_g_CommandListsExecutedThisFrame` is counted, so ProcessFrame saw `count==0` on every present,
+  classified all as interpolated, and `processCapture = !isInterpolatedFrame && ...` never held.
+- Fix: `present_association` stages the FFX callback's `isGeneratedFrame` for the Present it precedes on the same
+  thread (`ConsumePresentFrameVerdict`, cleared by the next callback and by `Reset()`); both ProcessFrame entry
+  points consume it beside the count, and capture uses
+  `dx12_overlay_policy::IsApplicationRenderedPresentForCapture` (callback verdict wins when known). Other
+  `isInterpolatedFrame` consumers (heuristics, skip policies) are deliberately unchanged.
+- Diagnostics: `Present callback verdict decides base capture over the command-list count` (first 5, then every
+  3000th). Hardware check pending: Talos FSR FG recording must go live and contain base-rate frames.
+- Open: with `capture_include_overlay=false`, callback-route frames already carry the overlay at ProcessFrame
+  time, and `captureBeforeOverlay` only runs inside the overlay draw gate. Not addressed here.
+
 ### 2026-09-26 - Shared capture transport generation (handle-value reuse)
 
 - Media keyed opened shared textures and the fence only by (source PID, handle value). DX12
