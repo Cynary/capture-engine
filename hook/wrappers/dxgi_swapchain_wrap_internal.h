@@ -74,6 +74,8 @@ extern void DX12_OnSwapchainResizeBegin();
 
 extern void DX12_OnSwapchainResizeEnd();
 
+extern bool DX12_ReleaseCaptureForSwapChainResize(IDXGISwapChain* swapChain, char* out, size_t outSize);
+
 extern bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 
 extern "C" __declspec(dllimport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);

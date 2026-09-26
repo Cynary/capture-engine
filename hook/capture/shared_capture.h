@@ -145,6 +145,23 @@ public:
     };
     SwapChainBinding DescribeSwapChainBinding(IDXGISwapChain* pSwapChain);
 
+    // Called before a resize of `pSwapChain` is forwarded: nothing of this
+    // capture may still be tied to the old back buffers when DXGI counts their
+    // references. Talos Reawakened died of DXGI_ERROR_INVALID_CALL with three
+    // extra references on every back buffer, only while this capture copied
+    // from the chain (logs/20260926_090625). Waits for this capture's own
+    // copies, then releases the generation; if media still leases published
+    // frames, the textures stay and only the command list, allocators and the
+    // swapchain binding go. The next capture re-initializes at the new size.
+    struct ResizeRelease {
+        bool targeted = false;
+        bool waitedForCopies = false;
+        bool waitTimedOut = false;
+        bool texturesKept = false;
+        UINT64 pendingFenceValue = 0;
+    };
+    ResizeRelease ReleaseForSwapChainResize(IDXGISwapChain* pSwapChain);
+
     // ISharedCaptureTarget
     bool GetCurrentFrame(SharedFrameDescriptor* pDesc) override;
     void ReleaseFrame(UINT frameNumber) override;

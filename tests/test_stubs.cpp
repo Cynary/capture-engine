@@ -121,6 +121,11 @@ void DX12_DescribeCaptureBindingForResize(IDXGISwapChain*, char* out, size_t out
     if (out && outSize != 0)
         out[0] = '\0';
 }
+bool DX12_ReleaseCaptureForSwapChainResize(IDXGISwapChain*, char* out, size_t outSize) {
+    if (out && outSize != 0)
+        out[0] = '\0';
+    return false;
+}
 void DX12_SignalFSR4SwapchainRecreated() {}
 void DX12_ServiceDeferredECLProbe() {}
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain*, const char*) {}

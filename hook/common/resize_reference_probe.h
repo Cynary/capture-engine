@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 
 // Diagnostics for a failing IDXGISwapChain::ResizeBuffers. DXGI rejects a
@@ -43,6 +44,47 @@ BackBufferReferences Probe(SwapChain* swapChain, UINT bufferCount, REFIID buffer
         ++references.probed;
     }
     return references;
+}
+
+// References everybody else holds on a buffer the caller already owns one
+// reference to (the capture's own GetBuffer), without changing the count.
+template <typename BufferType>
+ULONG HeldByOthersBesidesCaller(BufferType* buffer) {
+    if (!buffer) {
+        return 0;
+    }
+    buffer->AddRef();
+    const ULONG total = buffer->Release();
+    return total > 0 ? total - 1 : 0;
+}
+
+// Per-stage evidence from the capture copy itself (logs/20260926_090625 showed
+// three extra references per back buffer only while capture ran, and no CE code
+// keeps one). The first copies of a generation are logged as a baseline; later
+// ones only when a stage leaves more references than the copy found, which
+// names the call that takes them.
+struct CaptureStageReferences {
+    ULONG entry = 0;
+    ULONG recorded = 0;
+    ULONG executed = 0;
+    ULONG signaled = 0;
+};
+
+inline constexpr UINT kBaselineCopiesPerGeneration = 3;
+
+inline bool StagesAddedReferences(const CaptureStageReferences& stages) {
+    return stages.recorded > stages.entry || stages.executed > stages.entry || stages.signaled > stages.entry;
+}
+
+inline bool ShouldLogCaptureStageReferences(UINT copiesBeforeThisOne, const CaptureStageReferences& stages,
+                                            uint32_t anomalyLogIndex) {
+    if (copiesBeforeThisOne < kBaselineCopiesPerGeneration) {
+        return true;
+    }
+    if (!StagesAddedReferences(stages)) {
+        return false;
+    }
+    return anomalyLogIndex < 16 || (anomalyLogIndex % 256) == 0;
 }
 
 // "[2,2,3]" - one entry per probed buffer; "[]" when nothing could be probed.

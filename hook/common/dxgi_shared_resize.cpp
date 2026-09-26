@@ -72,30 +72,47 @@ void ReconcileApplicationResizeRequest(IDXGISwapChain* pSwapChain, UINT& BufferC
     BufferCount = requested;
 }
 
-// Before/after evidence for a D3D12 resize (see resize_reference_probe.h).
-// Resizes are rare, so every one is probed; the log is bounded for a title
-// that resizes in a loop. Chains of other APIs probe empty and log nothing.
-struct D3D12ResizeDiagnostics {
+// Before a D3D12 resize is forwarded: CE's shared capture lets go of the
+// chain (DXGI refuses a resize while its back buffers carry references - see
+// SharedCaptureD3D12::ReleaseForSwapChainResize), and the back buffers are
+// probed before and after that release (resize_reference_probe.h). Resizes are
+// rare, so every one is probed; the log is bounded for a title that resizes in
+// a loop. Chains of other APIs probe empty and log nothing.
+struct D3D12ResizePreparation {
     ce::resize_reference_probe::BackBufferReferences before;
+    ce::resize_reference_probe::BackBufferReferences afterCaptureRelease;
     UINT bufferCount = 0;
+    bool captureReleased = false;
+    char capture[160] = {};
+    char captureRelease[128] = {};
 };
 
-D3D12ResizeDiagnostics BeginD3D12ResizeDiagnostics(IDXGISwapChain* pSwapChain) {
-    D3D12ResizeDiagnostics diagnostics;
+D3D12ResizePreparation PrepareD3D12Resize(IDXGISwapChain* pSwapChain) {
+    D3D12ResizePreparation preparation;
     DXGI_SWAP_CHAIN_DESC desc = {};
     if (!pSwapChain || FAILED(pSwapChain->GetDesc(&desc))) {
-        return diagnostics;
+        return preparation;
     }
-    diagnostics.bufferCount = desc.BufferCount;
-    diagnostics.before =
+    preparation.bufferCount = desc.BufferCount;
+    preparation.before =
         ce::resize_reference_probe::Probe<ID3D12Resource>(pSwapChain, desc.BufferCount, __uuidof(ID3D12Resource));
-    return diagnostics;
+    if (preparation.before.probed == 0) {
+        return preparation;  // not a D3D12 chain: CE's D3D12 capture cannot be bound to it
+    }
+    DX12_DescribeCaptureBindingForResize(pSwapChain, preparation.capture, sizeof(preparation.capture));
+    preparation.captureReleased = DX12_ReleaseCaptureForSwapChainResize(pSwapChain, preparation.captureRelease,
+                                                                        sizeof(preparation.captureRelease));
+    if (preparation.captureReleased) {
+        preparation.afterCaptureRelease = ce::resize_reference_probe::Probe<ID3D12Resource>(
+            pSwapChain, desc.BufferCount, __uuidof(ID3D12Resource));
+    }
+    return preparation;
 }
 
-void EndD3D12ResizeDiagnostics(const D3D12ResizeDiagnostics& diagnostics, IDXGISwapChain* pSwapChain, HRESULT hr,
+void EndD3D12ResizeDiagnostics(const D3D12ResizePreparation& preparation, IDXGISwapChain* pSwapChain, HRESULT hr,
                                const char* source, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
                                UINT SwapChainFlags) {
-    if (diagnostics.before.probed == 0) {
+    if (preparation.before.probed == 0) {
         return;
     }
     static std::atomic<uint32_t> s_succeededLogs{0};
@@ -105,21 +122,25 @@ void EndD3D12ResizeDiagnostics(const D3D12ResizeDiagnostics& diagnostics, IDXGIS
         return;
     }
     char before[128] = {};
-    ce::resize_reference_probe::Format(diagnostics.before, before, sizeof(before));
+    ce::resize_reference_probe::Format(preparation.before, before, sizeof(before));
+    char afterCaptureRelease[128] = "n/a";
+    if (preparation.captureReleased) {
+        ce::resize_reference_probe::Format(preparation.afterCaptureRelease, afterCaptureRelease,
+                                           sizeof(afterCaptureRelease));
+    }
     char after[128] = "n/a";
     if (FAILED(hr)) {
         // Still the old buffers: the probe shows whether the holder let go.
         ce::resize_reference_probe::Format(ce::resize_reference_probe::Probe<ID3D12Resource>(
-                                               pSwapChain, diagnostics.bufferCount, __uuidof(ID3D12Resource)),
+                                               pSwapChain, preparation.bufferCount, __uuidof(ID3D12Resource)),
                                            after, sizeof(after));
     }
-    char capture[160] = {};
-    DX12_DescribeCaptureBindingForResize(pSwapChain, capture, sizeof(capture));
     HookLogImportant(
         "%s: D3D12 resize %s hr=0x%08lX sc=%p request(count=%u %ux%u fmt=%d flags=0x%X) buffers=%u "
-        "backBufferRefsHeldByOthers before=%s after=%s %s tid=0x%04lX log=%u",
+        "backBufferRefsHeldByOthers before=%s afterCaptureRelease=%s after=%s %s %s tid=0x%04lX log=%u",
         source, FAILED(hr) ? "FAILED" : "ok", static_cast<unsigned long>(hr), pSwapChain, BufferCount, Width, Height,
-        static_cast<int>(NewFormat), SwapChainFlags, diagnostics.bufferCount, before, after, capture,
+        static_cast<int>(NewFormat), SwapChainFlags, preparation.bufferCount, before, afterCaptureRelease, after,
+        preparation.capture, preparation.captureReleased ? preparation.captureRelease : "captureRelease(unbound)",
         GetCurrentThreadId(), logIndex + 1);
 }
 
@@ -143,10 +164,10 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwap
                                                    SwapChainFlags);
     }
     ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers");
-    const D3D12ResizeDiagnostics diagnostics = BeginD3D12ResizeDiagnostics(pSwapChain);
+    const D3D12ResizePreparation preparation = PrepareD3D12Resize(pSwapChain);
     const HRESULT hr =
         dxgi_shared_oResizeBuffersReconcile(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
-    EndD3D12ResizeDiagnostics(diagnostics, pSwapChain, hr, "ResizeBuffers", BufferCount, Width, Height, NewFormat,
+    EndD3D12ResizeDiagnostics(preparation, pSwapChain, hr, "ResizeBuffers", BufferCount, Width, Height, NewFormat,
                               SwapChainFlags);
     return hr;
 }
@@ -163,10 +184,10 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwa
                                                     SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     }
     ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers1");
-    const D3D12ResizeDiagnostics diagnostics = BeginD3D12ResizeDiagnostics(pSwapChain);
+    const D3D12ResizePreparation preparation = PrepareD3D12Resize(pSwapChain);
     const HRESULT hr = dxgi_shared_oResizeBuffers1Reconcile(pSwapChain, BufferCount, Width, Height, NewFormat,
                                                             SwapChainFlags, pCreationNodeMask, ppPresentQueue);
-    EndD3D12ResizeDiagnostics(diagnostics, pSwapChain, hr, "ResizeBuffers1", BufferCount, Width, Height, NewFormat,
+    EndD3D12ResizeDiagnostics(preparation, pSwapChain, hr, "ResizeBuffers1", BufferCount, Width, Height, NewFormat,
                               SwapChainFlags);
     return hr;
 }
@@ -202,6 +223,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
     }
 
     if (g_SharedState.wrapperResizeDepth.fetch_add(1) > 0) {
+        DX12_ReleaseCaptureForSwapChainResize(pSwapChain, nullptr, 0);
         HRESULT hr = dxgi_shared_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
         g_SharedState.wrapperResizeDepth.fetch_sub(1);
         ReleaseResize();
@@ -212,6 +234,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
     void* pWrapperTest = nullptr;
     if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapperTest))) {
         ((IUnknown*)pWrapperTest)->Release();
+        DX12_ReleaseCaptureForSwapChainResize(pSwapChain, nullptr, 0);
         HRESULT hr = dxgi_shared_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
         g_SharedState.wrapperResizeDepth.fetch_sub(1);
         ReleaseResize();
@@ -229,7 +252,11 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         HookLog("DXGI: ResizeBuffers - FIRST D3D12 resize, calling CE's saved predecessor");
         // Not vtable[13]: that slot can be CE's own detour once the
         // reconciliation claim is installed, which would recurse forever.
+        // A recording can already copy from the chain here.
+        const D3D12ResizePreparation preparation = PrepareD3D12Resize(pSwapChain);
         HRESULT hr = dxgi_shared_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+        EndD3D12ResizeDiagnostics(preparation, pSwapChain, hr, "DetourResizeBuffers(first)", BufferCount, Width,
+                                  Height, NewFormat, SwapChainFlags);
         HookLog("DXGI: ResizeBuffers - first D3D12 resize returned hr=0x%08X", hr);
         g_SharedState.wrapperResizeDepth.fetch_sub(1);
 
@@ -243,11 +270,11 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         HandleDX11ResizeBegin();
 
     HookLog("DXGI: ResizeBuffers - calling oResizeBuffers...");
-    const D3D12ResizeDiagnostics diagnostics =
-        api == APIType::D3D12 ? BeginD3D12ResizeDiagnostics(pSwapChain) : D3D12ResizeDiagnostics{};
+    const D3D12ResizePreparation preparation =
+        api == APIType::D3D12 ? PrepareD3D12Resize(pSwapChain) : D3D12ResizePreparation{};
     HRESULT hr = dxgi_shared_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     HookLog("DXGI: ResizeBuffers - oResizeBuffers returned hr=0x%08X", hr);
-    EndD3D12ResizeDiagnostics(diagnostics, pSwapChain, hr, "DetourResizeBuffers", BufferCount, Width, Height,
+    EndD3D12ResizeDiagnostics(preparation, pSwapChain, hr, "DetourResizeBuffers", BufferCount, Width, Height,
                               NewFormat, SwapChainFlags);
 
     if (FAILED(hr)) {
@@ -299,6 +326,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
     }
 
     if (g_SharedState.wrapperResizeDepth.fetch_add(1) > 0) {
+        DX12_ReleaseCaptureForSwapChainResize(pSwapChain, nullptr, 0);
         HRESULT hr = dxgi_shared_oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags,
                                      pCreationNodeMask, ppPresentQueue);
         g_SharedState.wrapperResizeDepth.fetch_sub(1);
@@ -310,6 +338,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
     void* pWrapperTest = nullptr;
     if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapperTest))) {
         ((IUnknown*)pWrapperTest)->Release();
+        DX12_ReleaseCaptureForSwapChainResize(pSwapChain, nullptr, 0);
         HRESULT hr = dxgi_shared_oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags,
                                      pCreationNodeMask, ppPresentQueue);
         g_SharedState.wrapperResizeDepth.fetch_sub(1);
@@ -328,8 +357,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
         HookLog("DXGI: ResizeBuffers1 - FIRST D3D12 resize, calling CE's saved predecessor");
         // Not vtable[13]: that is ResizeBuffers, so it silently dropped this
         // call's node mask and present queues, and it can now be CE's own detour.
+        // A recording can already copy from the chain here.
+        const D3D12ResizePreparation preparation = PrepareD3D12Resize(pSwapChain);
         HRESULT hr = dxgi_shared_oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags,
                                                  pCreationNodeMask, ppPresentQueue);
+        EndD3D12ResizeDiagnostics(preparation, pSwapChain, hr, "DetourResizeBuffers1(first)", BufferCount, Width,
+                                  Height, NewFormat, SwapChainFlags);
         HookLog("DXGI: ResizeBuffers1 - first D3D12 resize returned hr=0x%08X", hr);
         g_SharedState.wrapperResizeDepth.fetch_sub(1);
         ReleaseResize();
@@ -341,11 +374,11 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
     else if (api == APIType::D3D11)
         HandleDX11ResizeBegin();
 
-    const D3D12ResizeDiagnostics diagnostics =
-        api == APIType::D3D12 ? BeginD3D12ResizeDiagnostics(pSwapChain) : D3D12ResizeDiagnostics{};
+    const D3D12ResizePreparation preparation =
+        api == APIType::D3D12 ? PrepareD3D12Resize(pSwapChain) : D3D12ResizePreparation{};
     HRESULT hr = dxgi_shared_oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask,
                                  ppPresentQueue);
-    EndD3D12ResizeDiagnostics(diagnostics, pSwapChain, hr, "DetourResizeBuffers1", BufferCount, Width, Height,
+    EndD3D12ResizeDiagnostics(preparation, pSwapChain, hr, "DetourResizeBuffers1", BufferCount, Width, Height,
                               NewFormat, SwapChainFlags);
 
     if (FAILED(hr)) {

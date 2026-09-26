@@ -93,6 +93,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UI
 
     WrapperLog("ResizeBuffers: calling DX12_OnSwapchainResizeBegin");
     DX12_OnSwapchainResizeBegin();
+    // CE's capture may be bound to this wrapper rather than the real chain the
+    // resize reaches below; either way it must let go of the back buffers first.
+    if (m_IsD3D12)
+        DX12_ReleaseCaptureForSwapChainResize(this, nullptr, 0);
     WrapperLog("ResizeBuffers: DX12_OnSwapchainResizeBegin returned");
 
     WrapperLog("ResizeBuffers: calling CleanupOverlayResources");
@@ -314,6 +318,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, U
     }
 
     DX12_OnSwapchainResizeBegin();
+    // CE's capture may be bound to this wrapper rather than the real chain the
+    // resize reaches below; either way it must let go of the back buffers first.
+    if (m_IsD3D12)
+        DX12_ReleaseCaptureForSwapChainResize(this, nullptr, 0);
     CleanupOverlayResources();
     // CRITICAL FIX: Release DX11 backbuffer RTV before ResizeBuffers (same as above).
     if (!m_IsD3D12)

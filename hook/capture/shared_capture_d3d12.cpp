@@ -21,6 +21,7 @@
 #include "../../common/capture_base.h"
 #include "../apis/dx11_hook.h"
 #include "../common/hook_common.h"
+#include "../common/resize_reference_probe.h"
 
 // ============================================================================
 // SharedCaptureD3D12 Implementation
@@ -242,6 +243,58 @@ SharedCaptureD3D12::SwapChainBinding SharedCaptureD3D12::DescribeSwapChainBindin
     binding.framesCaptured = m_FrameCounter;
     binding.lastCaptureQpc = m_CurrentFrame.presentTime;
     return binding;
+}
+
+SharedCaptureD3D12::ResizeRelease SharedCaptureD3D12::ReleaseForSwapChainResize(IDXGISwapChain* pSwapChain) {
+    // A resize is not a Present: the resizing thread may wait for this
+    // capture's own copy, which DXGI requires to be finished anyway. The bound
+    // only keeps a wedged queue from wedging the game thread with it.
+    constexpr DWORD kCopyDrainBoundMs = 1000;
+
+    ResizeRelease result;
+    std::lock_guard<std::recursive_mutex> stateLock(m_StateLock);
+    ComPtr<IUnknown> identity;
+    if (!pSwapChain || !m_pSwapChainIdentity || FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&identity))) ||
+        identity.Get() != m_pSwapChainIdentity.Get()) {
+        return result;
+    }
+    result.targeted = true;
+    m_Active.store(false, std::memory_order_release);
+
+    for (UINT64 fenceValue : m_FenceValues)
+        result.pendingFenceValue = (fenceValue > result.pendingFenceValue) ? fenceValue : result.pendingFenceValue;
+    const UINT64 completed = m_Fence ? m_Fence->GetCompletedValue() : 0;
+    if (completed == UINT64_MAX) {
+        m_AbandonResourcesOnReset.store(true, std::memory_order_release);
+    } else if (m_Fence && result.pendingFenceValue > completed) {
+        HANDLE drained = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (drained && SUCCEEDED(m_Fence->SetEventOnCompletion(result.pendingFenceValue, drained))) {
+            result.waitedForCopies = true;
+            result.waitTimedOut = WaitForSingleObject(drained, kCopyDrainBoundMs) != WAIT_OBJECT_0;
+        } else {
+            result.waitTimedOut = true;
+        }
+        if (drained) {
+            CloseHandle(drained);
+        }
+    }
+
+    // Nothing leased: a full reset, which releases the finished generation now
+    // (or retires it untouched if the copy is still running).
+    if (Reset()) {
+        return result;
+    }
+    // Media still reads published frames from these textures, so they stay.
+    // What saw the back buffers goes, unless the GPU may still be executing it.
+    result.texturesKept = true;
+    if (!result.waitTimedOut) {
+        m_CommandList.Reset();
+        for (auto& allocator : m_CommandAllocators)
+            allocator.Reset();
+    }
+    m_pSwapChain.Reset();
+    m_pSwapChainIdentity.Reset();
+    return result;
 }
 
 bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) {
@@ -483,6 +536,9 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
         m_Active.store(false, std::memory_order_release);
         return false;
     }
+    namespace probe = ce::resize_reference_probe;
+    probe::CaptureStageReferences stageReferences;
+    stageReferences.entry = probe::HeldByOthersBesidesCaller(backBuffer.Get());
 
     UINT writeIdx = m_WriteIndex.load(std::memory_order_relaxed);
     SharedMemoryLayout* captureSharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
@@ -564,6 +620,7 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
         m_Active.store(false, std::memory_order_release);
         return false;
     }
+    stageReferences.recorded = probe::HeldByOthersBesidesCaller(backBuffer.Get());
 
     // Timestamp the source frame before queue submission so PTS reflects the
     // frame's visual time, not GPU copy latency.
@@ -581,10 +638,27 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
     } else {
         pCommandQueue->ExecuteCommandLists(1, cmdLists);
     }
+    stageReferences.executed = probe::HeldByOthersBesidesCaller(backBuffer.Get());
 
     // Signal fence
     UINT64 fenceVal = m_FenceValue.fetch_add(1, std::memory_order_relaxed) + 1;
     hr = pCommandQueue->Signal(m_Fence.Get(), fenceVal);
+    stageReferences.signaled = probe::HeldByOthersBesidesCaller(backBuffer.Get());
+    {
+        static std::atomic<uint32_t> s_stageAnomalyLogs{0};
+        const uint32_t anomalyLogIndex = probe::StagesAddedReferences(stageReferences)
+                                             ? s_stageAnomalyLogs.fetch_add(1, std::memory_order_relaxed)
+                                             : 0;
+        if (probe::ShouldLogCaptureStageReferences(m_FrameCounter, stageReferences, anomalyLogIndex)) {
+            EarlyLog(
+                "DX12: SharedCapture back-buffer references held by others bb=%u entry=%lu recorded=%lu "
+                "executed=%lu signaled=%lu copy=%u slot=%u queue=%p",
+                backBufferIndex, static_cast<unsigned long>(stageReferences.entry),
+                static_cast<unsigned long>(stageReferences.recorded),
+                static_cast<unsigned long>(stageReferences.executed),
+                static_cast<unsigned long>(stageReferences.signaled), m_FrameCounter + 1, writeIdx, pCommandQueue);
+        }
+    }
     if (FAILED(hr)) {
         EarlyLog("DX12: SharedCapture - Queue Signal failed slot=%u fence=%llu hr=0x%08X", writeIdx,
                  static_cast<unsigned long long>(fenceVal), hr);

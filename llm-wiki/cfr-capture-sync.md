@@ -193,6 +193,7 @@ Mux finalization and post-mux validation are separate ownership phases. Trailer 
 
 ## Invariants
 
+- The D3D12 inject producer lets go of a swapchain before any resize of it is forwarded (`DX12_ReleaseCaptureForSwapChainResize` on every CE resize path, `SharedCaptureD3D12::ReleaseForSwapChainResize`). It drains its own copy fence (bounded wait), then resets. If media still holds leases, the textures stay and the list, allocators and swapchain binding go. While it copied from the chain, Talos + FSR FG showed three extra references on every back buffer and the game's resize failed (2026-09-26). The exact holder inside the copy path is still unproven; see the resize log's `afterCaptureRelease` and the `CaptureFrame` stage line (`recent.md`).
 - Explicit CFR (`Video.useVFR=false`) disables the wall-clock audio anchor. Wall-clock chasing is a VFR/non-CFR tool, not a CFR sync tool.
 - Every scheduled CFR video tick through the final assigned PTS must have exactly one emitted packet. Declared stream/container duration is not a substitute for packet coverage; missing ticks or multi-tick PTS gaps are strict failures.
 - Settled CFR audio pulls are sample-exact to the current pull target, which normally remains 60 ms behind the live scheduled edge. Quantum rounding is still allowed for non-CFR/settling paths, but a settled CFR track must not carry a nonzero pull-target/cursor residual; final drain must reach the full CFR endpoint exactly.

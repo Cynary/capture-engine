@@ -211,6 +211,24 @@ if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
 return false;
 }
 
+bool DX12_ReleaseCaptureForSwapChainResize(IDXGISwapChain* swapChain, char* out, size_t outSize) {
+    if (out && outSize != 0)
+        out[0] = '\0';
+    // Same lock order as PublishDX12CapturedFrame, which republishes the
+    // generation's handles under it; that side only ever try-locks.
+    std::lock_guard<std::recursive_mutex> capLock(dx12_hook_g_DX12CaptureMutex);
+    const SharedCaptureD3D12::ResizeRelease release =
+        dx12_hook_g_SharedCaptureD3D12.ReleaseForSwapChainResize(swapChain);
+    if (!release.targeted)
+        return false;
+    if (out && outSize != 0) {
+        snprintf(out, outSize, "captureRelease(waited=%d timedOut=%d texturesKept=%d fence=%llu)",
+                 release.waitedForCopies ? 1 : 0, release.waitTimedOut ? 1 : 0, release.texturesKept ? 1 : 0,
+                 static_cast<unsigned long long>(release.pendingFenceValue));
+    }
+    return true;
+}
+
 void DX12_DescribeCaptureBindingForResize(IDXGISwapChain* swapChain, char* out, size_t outSize) {
     if (!out || outSize == 0)
         return;

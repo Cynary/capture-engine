@@ -160,6 +160,10 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 // One-line description of CE's shared capture binding to `swapChain`, for the
 // ResizeBuffers diagnostics. Non-blocking.
 void DX12_DescribeCaptureBindingForResize(IDXGISwapChain* swapChain, char* out, size_t outSize);
+// Before a resize of `swapChain` is forwarded: releases CE's shared capture
+// from it (see SharedCaptureD3D12::ReleaseForSwapChainResize) and describes
+// what was done. Returns whether the capture was bound to that chain.
+bool DX12_ReleaseCaptureForSwapChainResize(IDXGISwapChain* swapChain, char* out, size_t outSize);
 // Last-resort compatibility draw onto a game-registered FFX UI resource (no-app-callback FSR FG). The normal
 // game-thread proxy path uses target-compatible owner-queue ordering with no copy or CPU wait; this function
 // retains the isolated completion-waited path for a CE-owned substitute when no owner queue can be resolved.
