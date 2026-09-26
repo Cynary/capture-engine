@@ -157,6 +157,9 @@ void DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(const
 void DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption(const char* reason);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
                                                  void* userCtx);
+// One-line description of CE's shared capture binding to `swapChain`, for the
+// ResizeBuffers diagnostics. Non-blocking.
+void DX12_DescribeCaptureBindingForResize(IDXGISwapChain* swapChain, char* out, size_t outSize);
 // Last-resort compatibility draw onto a game-registered FFX UI resource (no-app-callback FSR FG). The normal
 // game-thread proxy path uses target-compatible owner-queue ordering with no copy or CPU wait; this function
 // retains the isolated completion-waited path for a CE-owned substitute when no owner queue can be resolved.

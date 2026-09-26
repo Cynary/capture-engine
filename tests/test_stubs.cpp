@@ -117,6 +117,10 @@ bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain*, const c
 }
 void DX12_OnSwapchainResizeBegin() {}
 void DX12_OnSwapchainResizeEnd() {}
+void DX12_DescribeCaptureBindingForResize(IDXGISwapChain*, char* out, size_t outSize) {
+    if (out && outSize != 0)
+        out[0] = '\0';
+}
 void DX12_SignalFSR4SwapchainRecreated() {}
 void DX12_ServiceDeferredECLProbe() {}
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain*, const char*) {}

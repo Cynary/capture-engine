@@ -226,6 +226,24 @@ bool SharedCaptureD3D12::IsInitializedFor(ID3D12Device* pDevice, IDXGISwapChain*
            identity.Get() == m_pSwapChainIdentity.Get();
 }
 
+SharedCaptureD3D12::SwapChainBinding SharedCaptureD3D12::DescribeSwapChainBinding(IDXGISwapChain* pSwapChain) {
+    SwapChainBinding binding;
+    std::unique_lock<std::recursive_mutex> stateLock(m_StateLock, std::try_to_lock);
+    if (!stateLock.owns_lock()) {
+        binding.busy = true;
+        return binding;
+    }
+    binding.active = m_Active.load(std::memory_order_acquire);
+    ComPtr<IUnknown> identity;
+    binding.targetsSwapChain = pSwapChain && m_pSwapChainIdentity &&
+                               SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&identity))) &&
+                               identity.Get() == m_pSwapChainIdentity.Get();
+    std::lock_guard<std::mutex> frameLock(m_Lock);
+    binding.framesCaptured = m_FrameCounter;
+    binding.lastCaptureQpc = m_CurrentFrame.presentTime;
+    return binding;
+}
+
 bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) {
     std::lock_guard<std::recursive_mutex> stateLock(m_StateLock);
     if (!pDevice || !pSwapChain)

@@ -1,5 +1,6 @@
 #include "dxgi_shared_internal.h"
 #include "present_pacing_policy.h"
+#include "resize_reference_probe.h"
 #include "swapchain_flag_policy.h"
 
 namespace DXGIShared {
@@ -71,6 +72,57 @@ void ReconcileApplicationResizeRequest(IDXGISwapChain* pSwapChain, UINT& BufferC
     BufferCount = requested;
 }
 
+// Before/after evidence for a D3D12 resize (see resize_reference_probe.h).
+// Resizes are rare, so every one is probed; the log is bounded for a title
+// that resizes in a loop. Chains of other APIs probe empty and log nothing.
+struct D3D12ResizeDiagnostics {
+    ce::resize_reference_probe::BackBufferReferences before;
+    UINT bufferCount = 0;
+};
+
+D3D12ResizeDiagnostics BeginD3D12ResizeDiagnostics(IDXGISwapChain* pSwapChain) {
+    D3D12ResizeDiagnostics diagnostics;
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    if (!pSwapChain || FAILED(pSwapChain->GetDesc(&desc))) {
+        return diagnostics;
+    }
+    diagnostics.bufferCount = desc.BufferCount;
+    diagnostics.before =
+        ce::resize_reference_probe::Probe<ID3D12Resource>(pSwapChain, desc.BufferCount, __uuidof(ID3D12Resource));
+    return diagnostics;
+}
+
+void EndD3D12ResizeDiagnostics(const D3D12ResizeDiagnostics& diagnostics, IDXGISwapChain* pSwapChain, HRESULT hr,
+                               const char* source, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat,
+                               UINT SwapChainFlags) {
+    if (diagnostics.before.probed == 0) {
+        return;
+    }
+    static std::atomic<uint32_t> s_succeededLogs{0};
+    static std::atomic<uint32_t> s_failedLogs{0};
+    const uint32_t logIndex = (FAILED(hr) ? s_failedLogs : s_succeededLogs).fetch_add(1, std::memory_order_relaxed);
+    if (logIndex >= (FAILED(hr) ? 32u : 16u) && (logIndex % 64) != 0) {
+        return;
+    }
+    char before[128] = {};
+    ce::resize_reference_probe::Format(diagnostics.before, before, sizeof(before));
+    char after[128] = "n/a";
+    if (FAILED(hr)) {
+        // Still the old buffers: the probe shows whether the holder let go.
+        ce::resize_reference_probe::Format(ce::resize_reference_probe::Probe<ID3D12Resource>(
+                                               pSwapChain, diagnostics.bufferCount, __uuidof(ID3D12Resource)),
+                                           after, sizeof(after));
+    }
+    char capture[160] = {};
+    DX12_DescribeCaptureBindingForResize(pSwapChain, capture, sizeof(capture));
+    HookLogImportant(
+        "%s: D3D12 resize %s hr=0x%08lX sc=%p request(count=%u %ux%u fmt=%d flags=0x%X) buffers=%u "
+        "backBufferRefsHeldByOthers before=%s after=%s %s tid=0x%04lX log=%u",
+        source, FAILED(hr) ? "FAILED" : "ok", static_cast<unsigned long>(hr), pSwapChain, BufferCount, Width, Height,
+        static_cast<int>(NewFormat), SwapChainFlags, diagnostics.bufferCount, before, after, capture,
+        GetCurrentThreadId(), logIndex + 1);
+}
+
 }  // namespace
 
 // Predecessors of the reconcile-only ResizeBuffers claim. Kept separate from the
@@ -86,10 +138,17 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwap
     if (!dxgi_shared_oResizeBuffersReconcile) {
         return DXGI_ERROR_INVALID_CALL;
     }
-    if (!IsShuttingDown()) {
-        ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers");
+    if (IsShuttingDown()) {
+        return dxgi_shared_oResizeBuffersReconcile(pSwapChain, BufferCount, Width, Height, NewFormat,
+                                                   SwapChainFlags);
     }
-    return dxgi_shared_oResizeBuffersReconcile(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers");
+    const D3D12ResizeDiagnostics diagnostics = BeginD3D12ResizeDiagnostics(pSwapChain);
+    const HRESULT hr =
+        dxgi_shared_oResizeBuffersReconcile(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    EndD3D12ResizeDiagnostics(diagnostics, pSwapChain, hr, "ResizeBuffers", BufferCount, Width, Height, NewFormat,
+                              SwapChainFlags);
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,
@@ -99,11 +158,17 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwa
     if (!dxgi_shared_oResizeBuffers1Reconcile) {
         return DXGI_ERROR_INVALID_CALL;
     }
-    if (!IsShuttingDown()) {
-        ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers1");
+    if (IsShuttingDown()) {
+        return dxgi_shared_oResizeBuffers1Reconcile(pSwapChain, BufferCount, Width, Height, NewFormat,
+                                                    SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     }
-    return dxgi_shared_oResizeBuffers1Reconcile(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags,
-                                                pCreationNodeMask, ppPresentQueue);
+    ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers1");
+    const D3D12ResizeDiagnostics diagnostics = BeginD3D12ResizeDiagnostics(pSwapChain);
+    const HRESULT hr = dxgi_shared_oResizeBuffers1Reconcile(pSwapChain, BufferCount, Width, Height, NewFormat,
+                                                            SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+    EndD3D12ResizeDiagnostics(diagnostics, pSwapChain, hr, "ResizeBuffers1", BufferCount, Width, Height, NewFormat,
+                              SwapChainFlags);
+    return hr;
 }
 
 }  // namespace DXGIShared
@@ -178,8 +243,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         HandleDX11ResizeBegin();
 
     HookLog("DXGI: ResizeBuffers - calling oResizeBuffers...");
+    const D3D12ResizeDiagnostics diagnostics =
+        api == APIType::D3D12 ? BeginD3D12ResizeDiagnostics(pSwapChain) : D3D12ResizeDiagnostics{};
     HRESULT hr = dxgi_shared_oResizeBuffers(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     HookLog("DXGI: ResizeBuffers - oResizeBuffers returned hr=0x%08X", hr);
+    EndD3D12ResizeDiagnostics(diagnostics, pSwapChain, hr, "DetourResizeBuffers", BufferCount, Width, Height,
+                              NewFormat, SwapChainFlags);
 
     if (FAILED(hr)) {
         HookLog("DXGI: ResizeBuffers FAILED with 0x%08X", hr);
@@ -272,8 +341,12 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
     else if (api == APIType::D3D11)
         HandleDX11ResizeBegin();
 
+    const D3D12ResizeDiagnostics diagnostics =
+        api == APIType::D3D12 ? BeginD3D12ResizeDiagnostics(pSwapChain) : D3D12ResizeDiagnostics{};
     HRESULT hr = dxgi_shared_oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags, pCreationNodeMask,
                                  ppPresentQueue);
+    EndD3D12ResizeDiagnostics(diagnostics, pSwapChain, hr, "DetourResizeBuffers1", BufferCount, Width, Height,
+                              NewFormat, SwapChainFlags);
 
     if (FAILED(hr)) {
         HookLog("DXGI: ResizeBuffers1 FAILED with 0x%08X", hr);

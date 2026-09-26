@@ -293,12 +293,18 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
   }
 
   constexpr DWORD kExternalDumpHelperWaitMs = 8000;
+  // The helper suspends this whole process while it writes, this thread
+  // included, so the wait can overrun its timeout by the full write time.
+  // Elapsed wall time is what the game actually stood still for.
+  const ULONGLONG waitStartMs = GetTickCount64();
   const DWORD waitResult = WaitForSingleObject(pi.hProcess, kExternalDumpHelperWaitMs);
+  const unsigned long long waitElapsedMs = GetTickCount64() - waitStartMs;
   if (waitResult == WAIT_TIMEOUT) {
     HookLogImportant(
         "FatalExitDump: External pre-termination dump helper still running after timeout "
-        "(source=%s timeoutMs=%lu hint=%s) — skipping in-process fallback to avoid dump-path hang",
-        source ? source : "unknown", static_cast<unsigned long>(kExternalDumpHelperWaitMs), dumpHint);
+        "(source=%s timeoutMs=%lu elapsedMs=%llu hint=%s) — skipping in-process fallback to avoid dump-path hang",
+        source ? source : "unknown", static_cast<unsigned long>(kExternalDumpHelperWaitMs), waitElapsedMs,
+        dumpHint);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return ExternalPreTerminationDumpResult::kTimedOut;
@@ -311,8 +317,8 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
 
   if (waitResult == WAIT_OBJECT_0 && helperExitCode == 0) {
     HookLogImportant("FatalExitDump: External pre-termination dump helper captured dump "
-                     "(source=%s hint=%s)",
-                     source ? source : "unknown", dumpHint);
+                     "(source=%s elapsedMs=%llu hint=%s)",
+                     source ? source : "unknown", waitElapsedMs, dumpHint);
     return ExternalPreTerminationDumpResult::kCaptured;
   }
 

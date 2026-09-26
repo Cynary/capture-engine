@@ -253,6 +253,8 @@ TEST(CrashOutputTruthSourceTest, QuickAssertDumpBranchIsCappedAndGuardedBeforeIt
 
     EXPECT_NE(body.find("ce::privacy::CollapsePathForLog(dumpPath)"), std::string::npos)
         << "the dump path crash.log names must not expose the private directory layout";
+    EXPECT_NE(body.find("ce::crash_dump_policy::kExternalQuickAssertDumpIsStackOnly"), std::string::npos)
+        << "the helper-written assert dump must ask for the stack-only scope, not the rich crash type";
 }
 
 // Source side of the breakpoint policy: no per-run immediate-dump budget may

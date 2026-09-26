@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-09-26 - Talos resize fatal while recording under FSR FG: root cause OPEN, diagnostics added
+
+- Session `logs/20260926_083506` (0.1.6835): resolution change during an FSR FG recording. Unreal's own log:
+  `SwapChain1->ResizeBuffers(3, 2560x1440, flags=0x802)` -> `DXGI_ERROR_INVALID_CALL` -> appError fatal. The same
+  flow (FG off, real 3840->2560 resize, FG on) succeeded in `20260926_081620`, where recording was armed but capture
+  never ran (bug fixed in 2e8369f0). Capture running on the callback-owned FSR route is the only known delta.
+- Ruled out: CE CPU references (every DX12 `GetBuffer` is scope-local); closed command lists (AMD's own pooled lists
+  stay closed across its resize, and CE's overlay list stayed closed through the 08:20 resize; a reset-after-submit
+  change was written and reverted as unproven); concurrent-capture race (AMD's `ResizeBuffers` kills its presenter
+  thread first, no Presents for 0.65 s); flags (AMD's `getInterpolationEnabledSwapChainFlags` is deterministic); CE
+  reconcile detour's null-predecessor return (predecessor valid in the dump). The dump has no back-buffer memory.
+- Diagnostics: every D3D12 `ResizeBuffers`/`ResizeBuffers1` through CE's reconcile claim or full detour now logs
+  `D3D12 resize ok|FAILED hr=... backBufferRefsHeldByOthers before=[..] after=[..] capture(active busy thisChain
+  frames lastCopyAgeMs)` (`hook/common/resize_reference_probe.h`). Next repro compares success vs failure counts.
+- Also found: the helper-written "quick assert" dump used the RICH crash type (158 MB, 8276 ranges) and froze the game
+  18 s against an 8 s wait timeout - the helper suspends the waiting thread too, so the timeout cannot bound it. Now
+  stack-only (`kExternalQuickAssertDumpIsStackOnly`); the wait log reports `elapsedMs`.
+
 ### 2026-09-26 - Talos FSR FG recording stuck in preparation: capture starved by transparent ECL
 
 - Session `logs/20260926_081620` (Talos Reawakened, FSR FG via app present callback, 0.1.6834): r0002 never went

@@ -133,6 +133,18 @@ public:
     // preserved overlay backend from accidentally capturing an obsolete swapchain.
     bool IsInitializedFor(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) const;
 
+    // Diagnostics for a swapchain resize: whether this capture generation
+    // copies from `pSwapChain` and how recently. Never blocks the resizing
+    // thread - a capture holding the state lock reports `busy` instead.
+    struct SwapChainBinding {
+        bool busy = false;
+        bool active = false;
+        bool targetsSwapChain = false;
+        UINT framesCaptured = 0;
+        int64_t lastCaptureQpc = 0;
+    };
+    SwapChainBinding DescribeSwapChainBinding(IDXGISwapChain* pSwapChain);
+
     // ISharedCaptureTarget
     bool GetCurrentFrame(SharedFrameDescriptor* pDesc) override;
     void ReleaseFrame(UINT frameNumber) override;

@@ -210,3 +210,22 @@ if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
 }
 return false;
 }
+
+void DX12_DescribeCaptureBindingForResize(IDXGISwapChain* swapChain, char* out, size_t outSize) {
+    if (!out || outSize == 0)
+        return;
+    const SharedCaptureD3D12::SwapChainBinding binding =
+        dx12_hook_g_SharedCaptureD3D12.DescribeSwapChainBinding(swapChain);
+    long long lastCopyAgeMs = -1;
+    if (binding.lastCaptureQpc > 0) {
+        LARGE_INTEGER now{};
+        LARGE_INTEGER frequency{};
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&frequency);
+        if (frequency.QuadPart > 0)
+            lastCopyAgeMs = (now.QuadPart - binding.lastCaptureQpc) * 1000 / frequency.QuadPart;
+    }
+    snprintf(out, outSize, "capture(active=%d busy=%d thisChain=%d frames=%u lastCopyAgeMs=%lld)",
+             binding.active ? 1 : 0, binding.busy ? 1 : 0, binding.targetsSwapChain ? 1 : 0, binding.framesCaptured,
+             lastCopyAgeMs);
+}

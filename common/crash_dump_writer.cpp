@@ -398,7 +398,8 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
             ExternalDumpException exception;
             exception.pointers = pExceptionPointers;
             exception.threadId = GetCurrentThreadId();
-            if (CaptureCrashDumpWithExternalHelper(dumpFileName, false, &exception)) {
+            if (CaptureCrashDumpWithExternalHelper(
+                    dumpFileName, ce::crash_dump_policy::kExternalQuickAssertDumpIsStackOnly, &exception)) {
                 TraceCrash("External helper captured the quick assert dump");
                 return EXCEPTION_CONTINUE_SEARCH;
             }

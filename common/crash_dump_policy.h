@@ -55,6 +55,15 @@ inline bool ShouldWriteQuickAssertDump(uint32_t quickAssertDumpsAlreadyWritten) 
     return quickAssertDumpsAlreadyWritten < kQuickAssertDumpPerProcessLimit;
 }
 
+// The external helper writes the assert dump while every thread of the game is
+// suspended, so the dump's size IS the freeze, and the caller's wait timeout
+// cannot bound it (the waiting thread is suspended too). Without a scope the
+// helper wrote its rich crash type: Talos Reawakened's fatal-resize ensure
+// (logs/20260926_083506) produced 158 MB in 8276 ranges and froze the game for
+// 18 s against an 8 s timeout. An ensure is answered by its thread stacks and
+// the exception context, which the stack-only scope keeps at about a megabyte.
+inline constexpr bool kExternalQuickAssertDumpIsStackOnly = true;
+
 inline constexpr MINIDUMP_TYPE kRichFreezeDumpType = static_cast<MINIDUMP_TYPE>(
     MiniDumpWithDataSegs | MiniDumpWithHandleData | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
     MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithProcessThreadData | MiniDumpWithFullMemoryInfo |

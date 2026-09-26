@@ -480,6 +480,12 @@ TEST(CrashDumpPolicyTest, QuickAssertDumpsAreBudgetedPerProcess) {
     EXPECT_FALSE(policy::ShouldWriteQuickAssertDump(1000));
 }
 
+// The helper suspends the whole game while it writes; an ensure dump must not
+// be the rich crash type (158 MB / 18 s freeze in logs/20260926_083506).
+TEST(CrashDumpPolicyTest, ExternalQuickAssertDumpsAreStackOnly) {
+    EXPECT_TRUE(policy::kExternalQuickAssertDumpIsStackOnly);
+}
+
 TEST(CrashDumpPolicyTest, ExtractPrintableMessageFindsTextAmongBinaryNoise) {
     // Mimics a thrown std::out_of_range object: vtable-ish pointers around an
     // inline (small-string) message.
