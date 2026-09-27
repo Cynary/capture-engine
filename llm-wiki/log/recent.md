@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-09-27 - Talos "windowed" start fatal: hidden-window create dropped the swapchain queue
+
+- `logs/20260927_034946` (0.1.6842): the resize fix above is confirmed on hardware (4K -> 1440p with Steam, no crash).
+- New case, with or without Steam: Talos options say windowed, actual borderless native 4K. The Streamline swapchain
+  was created while the HWND was hidden -> `Invisible-window swapchain ... bypassing` -> no `Swapchain queue captured`
+  (in `logs/20260927_031545` the same create was visible and `scQ=` its create queue). First visible Present chose `path=primaryQ` (render queue),
+  `Reinit SUBMIT #1 ... devRemoved=0x887A002B`. UE's fatal path used TerminateProcess, hence no CE `.dmp`.
+- Fix: park the create queue and evidence, promote them on the first visible Present (see `dx12-injection-bootstrap.md`).
+- Next repro: expect `Parked create-time queue ownership ...`, then `First visible Present of hidden-window swapchain
+  ... promote ... presentedQueue=same`, `Swapchain queue captured`, and `ProcessFrame ... path=scQueue`.
+
 ### 2026-09-27 - Talos resize fatal: CE's hooks sat where Steam patches (slot, then function entry)
 
 - `logs/20260927_031545` (0.1.6841, no FG): still `FAILED ... [6,6,6,6,6,6]`, `gameoverlayrenderer64.dll=+6`. The

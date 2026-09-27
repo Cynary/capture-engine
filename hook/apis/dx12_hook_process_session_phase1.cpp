@@ -216,6 +216,10 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
     if (frameDesc.OutputWindow) {
         TrackSwapchainHwnd(pSwapChain, frameDesc.OutputWindow);
     }
+    // A swapchain created while its window was hidden takes the queue ownership its create
+    // deferred now, before any queue is chosen for this frame's overlay: writing its back
+    // buffer from a queue that does not own it removes the device.
+    PromoteParkedCreateSwapchainOnVisiblePresent(pSwapChain);
 
     zeroSizedSwapchain = (frameDesc.BufferDesc.Width == 0 || frameDesc.BufferDesc.Height == 0);
     iconicWindow = frameDesc.OutputWindow && IsIconic(frameDesc.OutputWindow);

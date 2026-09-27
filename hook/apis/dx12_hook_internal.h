@@ -515,7 +515,12 @@ bool ShouldApplySwapchainDescriptorOverridesForCreate( const CreateSwapchainQueu
 void PrepareForAuthoritativeFFXSwapchainCreate(const CreateSwapchainQueueCaptureEvidence& captureEvidence, const char* context);
 void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage);
 void LogSkippedSwapchainDescriptorOverridesForRuntimeCreate( const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence, UINT bufferCount, UINT flags, DXGI_SWAP_EFFECT swapEffect);
-bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapChain* swapchain, const char* context, HRESULT hr);
+bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapChain* swapchain, const char* context, HRESULT hr, IUnknown* createDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, bool createCapturesQueue);
+void ParkInvisibleWindowCreateSwapchain(IDXGISwapChain* swapchain, HWND hWnd, IUnknown* createDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, bool createCapturesQueue, const char* context);
+void ForgetParkedCreateSwapchainsForWindow(HWND hWnd, const char* context);
+void PromoteParkedCreateSwapchainOnVisiblePresent(IDXGISwapChain* swapchain);
+void NoteUncapturedSwapchainQueueFallback(IDXGISwapChain* swapchain, ID3D12CommandQueue* chosenQueue);
+void ReleaseParkedCreateSwapchains(const char* context);
 void QuiesceStreamlinePostSLForProtectedOfficialFFXStartup( IDXGISwapChain* swapchain, const CreateSwapchainQueueCaptureEvidence& captureEvidence, const char* context);
 bool HandleProtectedOfficialFFXStartupSwapchainCreate(const CreateSwapchainQueueCaptureEvidence& captureEvidence, IUnknown* createDevice, IDXGISwapChain* swapchain, const char* context);
 void ApplyAuthoritativeFFXTakeoverSideEffects(ID3D12CommandQueue* capturedQueue, const char* callerModulePath, const char* reason);

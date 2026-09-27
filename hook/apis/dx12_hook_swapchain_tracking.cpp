@@ -726,7 +726,8 @@ if (SUCCEEDED(hr) && ppSC && *ppSC && hWnd) {
         return hr;
     }
     IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
-    if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(hWnd, newSC, "DeepHook", hr)) {
+    if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(hWnd, newSC, "DeepHook", hr, pDevice, captureEvidence,
+                                                              true)) {
         return hr;
     }
     if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, pDevice, newSC, "DeepHook")) {

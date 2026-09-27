@@ -278,7 +278,7 @@ if (logCount < 20 || (logCount % 128) == 0) {
 }
 
 
-bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapChain* swapchain, const char* context, HRESULT hr) {
+bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapChain* swapchain, const char* context, HRESULT hr, IUnknown* createDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, bool createCapturesQueue) {
 if (FAILED(hr) || !swapchain || !hWnd) {
     return false;
 }
@@ -286,15 +286,19 @@ if (FAILED(hr) || !swapchain || !hWnd) {
 const bool outputWindowVisible = IsWindowVisible(hWnd) != FALSE;
 if (!ce::dx12_overlay_policy::ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(
         true, outputWindowVisible)) {
+    ForgetParkedCreateSwapchainsForWindow(hWnd, context);
     return false;
 }
+// The window may be the game's own, shown only after this create: the queue ownership the
+// visible path would take now is parked, not dropped (deferred_swapchain_create_ledger.h).
+ParkInvisibleWindowCreateSwapchain(swapchain, hWnd, createDevice, captureEvidence, createCapturesQueue, context);
 
 static std::atomic<int> s_invisibleWindowCreateSkipLogCount{0};
 const int logCount = s_invisibleWindowCreateSkipLogCount.fetch_add(1, std::memory_order_relaxed);
 if (logCount < 20 || (logCount % 128) == 0) {
     HookLogImportant(
         "%s: Invisible-window swapchain %p for HWND=%p — bypassing CE swapchain side-effects "
-        "(queue capture, Present refresh, cooldown, wrapper decisions skipped; hr=0x%08X count=%d)",
+        "(Present refresh, cooldown, wrapper decisions skipped; queue capture parked; hr=0x%08X count=%d)",
         context && context[0] ? context : "CreateSwapChainForHwnd", swapchain, hWnd, hr, logCount + 1);
 }
 return true;

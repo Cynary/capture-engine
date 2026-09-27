@@ -345,7 +345,8 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
         return hr;
     }
     IDXGISwapChain* newSC = static_cast<IDXGISwapChain*>(*ppSC);
-    if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(hWnd, newSC, "CreateSwapChainForHwnd INLINE", hr)) {
+    if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(hWnd, newSC, "CreateSwapChainForHwnd INLINE", hr,
+                                                              pDevice, captureEvidence, true)) {
         return hr;
     }
     if (HandleProtectedOfficialFFXStartupSwapchainCreate(captureEvidence, pDevice, newSC,
@@ -469,7 +470,8 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         return hr;
     }
     if (pDesc && ShouldBypassInvisibleWindowCreateSwapchainSideEffects(
-                     pDesc->OutputWindow, *ppSwapChain, "DetourCreateSwapChainGlobal", hr)) {
+                     pDesc->OutputWindow, *ppSwapChain, "DetourCreateSwapChainGlobal", hr, pDevice, captureEvidence,
+                     IsStreamlineLoaded() && DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true))) {
         return hr;
     }
 
@@ -658,8 +660,9 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
                                               captureEvidence);
         return hr;
     }
-    if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(hWnd, *ppSC, "DetourCreateSwapChainForHwndGlobal",
-                                                              hr)) {
+    if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(
+            hWnd, *ppSC, "DetourCreateSwapChainForHwndGlobal", hr, pDevice, captureEvidence,
+            IsStreamlineLoaded() && DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true))) {
         return hr;
     }
 

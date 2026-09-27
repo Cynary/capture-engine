@@ -483,6 +483,7 @@ void DX12Hook::Shutdown() {
         dx12_hook_g_SwapchainQueue = nullptr;
         dx12_hook_g_LastSwapchainQueueCaptureSwapchain.store(nullptr, std::memory_order_release);
     }
+    ReleaseParkedCreateSwapchains("DX12: Shutdown");
     dx12_hook_g_PostSLDeferredQueueCleanupPending.store(false, std::memory_order_release);
     ClearPostSLQueues("DX12: Shutdown");
     ClearPostSLPinnedSLWrapperQueue("DX12: Shutdown");

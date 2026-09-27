@@ -254,6 +254,25 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
      the overlay reports the real multiplier (session `logs/20260811_230524`).
   At FG resume the warm overlay therefore keeps drawing on `origGame` with no
   reinit and no blank, matching the healthy startup sessions.
+- **A swapchain created on a still-hidden window owes its queue capture to its
+  first visible Present (2026-09-27).** Create paths skip every side effect for
+  a hidden-window swapchain (helpers never show), but a game may create its real
+  swapchain before `ShowWindow`. Talos in its "windowed" native-resolution mode
+  (`logs/20260927_034946`, with or without Steam): `DetourCreateSwapChainGlobal`
+  logged `Invisible-window swapchain`, no queue was captured, the first frame
+  took the generic `scQueue ?: last ECL queue` fallback (`path=primaryQ`, the
+  render queue, not the Streamline swapchain's queue), and the backbuffer draw
+  hit `0x887A002B` on submit #1. UE then terminated (CrashReportClient, no CE
+  dump). Fix: `ShouldBypassInvisibleWindowCreateSwapchainSideEffects` parks
+  the create queue plus capture evidence (`deferred_swapchain_create_ledger.h`,
+  `dx12_hook_deferred_swapchain_create.cpp`); Phase1 promotes it on that
+  swapchain's first visible Present, ahead of Phase2's queue choice, replaying
+  the create path's protected-FFX check and queue capture (not Present-hook
+  refresh, wrapping, or cooldown). A visible create for the same HWND
+  supersedes the record; a readable `GetDevice` queue that differs from the
+  parked one discards it as a reused address. `No swapchain queue captured`
+  logs the fallback with the swapchain's own queue (`DIFFERENT` = a create path
+  that still captures nothing).
 - Resident-hook reactivation re-binds all session-scoped diagnostics to the
   replacement host's log directory: the crash dump directory, the perf_metrics
   CSV (`PerfLogger::Init(..., true)` finalizes the old file and restarts frame

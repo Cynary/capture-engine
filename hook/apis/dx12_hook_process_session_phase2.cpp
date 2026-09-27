@@ -696,8 +696,10 @@ gameQueue = nullptr;
         return ProcessFrameFlow::kReturn;
         } else {
             gameQueue = dx12_hook_g_SwapchainQueue;
-            if (!gameQueue)
+            if (!gameQueue) {
                 gameQueue = g_CommandQueue.load();
+                NoteUncapturedSwapchainQueueFallback(pSwapChain, gameQueue);
+            }
         }
     }
 }

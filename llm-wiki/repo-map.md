@@ -120,6 +120,8 @@ anchors that predate the split are approximate.
       renderer/state and exact-proxy lifetime),
       `dx12_hook_queue_adoption.cpp` (stable same-device discovery versus explicit queue binding,
       device/queue reference publication),
+      `dx12_hook_deferred_swapchain_create.cpp` + `../common/deferred_swapchain_create_ledger.h`
+      (hidden-window swapchain creates park their queue capture until the first visible Present),
       `../common/pacing_trace.{h,cpp}` (bounded FSR event history and background suspect/manual saves),
       `../common/pacing_trace_boundary.h` (paired proxy/DXGI Present spans),
       `../common/pacing_trace_analysis.h` (background save summaries and coverage validation),
