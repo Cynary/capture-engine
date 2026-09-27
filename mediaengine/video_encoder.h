@@ -22,6 +22,7 @@
 #include "../common/reserved_capture_output.h"
 #include "../common/shared_defs.h"
 #include "mux_invariants.h"
+#include "mux_queue_pressure.h"
 #include "video_format_policy.h"
 
 extern "C" {
@@ -380,6 +381,24 @@ private:
     std::atomic<uint32_t> muxBackpressureCount{0};
     std::atomic<uint32_t> muxBackpressureWaitUs{0};
     std::atomic<uint32_t> muxBackpressureMaxWaitUs{0};
+    // Queue-pressure early warning. Tracker and window baseline: queueMutex.
+    struct MuxPressureWindow {
+        ce::mux::MuxWriterWindowRates rates;
+        uint64_t windowMs = 0;
+        uint32_t maxWriteUs = 0;
+    };
+    ce::mux::MuxQueuePressureTracker muxQueuePressure;
+    uint64_t muxEnqueuedBytesTotal = 0;
+    uint64_t muxPressureWindowStartMs = 0;
+    uint64_t muxPressureWindowEnqueuedBytes = 0;
+    uint64_t muxPressureWindowWrittenBytes = 0;
+    uint64_t muxPressureWindowBusyUs = 0;
+    // Written by the mux writer thread only.
+    std::atomic<uint64_t> muxWriterBytesWritten{0};
+    std::atomic<uint64_t> muxWriterBusyUs{0};
+    std::atomic<uint32_t> muxWriterMaxWriteUs{0};
+    uint64_t lastSlowMuxWriteLogMs = 0;
+    uint32_t suppressedSlowMuxWrites = 0;
     std::atomic<uint32_t> packetDurationClampCount{0};
     std::atomic<uint32_t> negativePtsCount{0};
     std::atomic<uint32_t> nonMonotonicPtsCount{0};
@@ -680,4 +699,9 @@ private:
 
     void AsyncWriteLoop();
     void PublishRuntimeState();
+    void ResetMuxQueuePressure();
+    MuxPressureWindow TakeMuxPressureWindowLocked(uint64_t nowMs);
+    void LogMuxQueuePressure(const ce::mux::MuxQueuePressureUpdate& update, const MuxPressureWindow& window,
+                             size_t queuedBytes, uint32_t queuedPackets, size_t limitBytes);
+    void ObserveMuxWrite(size_t packetBytes, uint64_t writeUs);
 };

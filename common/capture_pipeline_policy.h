@@ -20,3 +20,4 @@
 #include "capture_policy/cfr_repeat_metrics.h"
 #include "capture_policy/cfr_nearest_playout.h"
 #include "capture_policy/final_output_timing.h"
+#include "capture_policy/inject_lineage.h"

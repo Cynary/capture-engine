@@ -284,35 +284,8 @@ void MediaEncoderSession::LoopEncode() {
 
                 cadenceCounters.consecutiveDeferredFrames = 0;
 
-                if (!isDuplicate && frameToProcess && frameToProcess->frameIndex != 0) {
-                    if (lastEncodedInjectFrameIndex != 0 && frameToProcess->frameIndex < lastEncodedInjectFrameIndex) {
-                        LogWarn(
-                            "[EncoderThread] Inject lineage regression: encoded frame=%u after frame=%u (ring=%u "
-                            "tex=%d ts=%lld)",
-                            frameToProcess->frameIndex, lastEncodedInjectFrameIndex, frameToProcess->ringIndex,
-                            frameToProcess->textureIndex, static_cast<long long>(frameToProcess->timestamp));
-                        if (media_main_g_pSharedMem) {
-                            media_main_g_pSharedMem->runtimeState.frameIndexRegressions.fetch_add(1, std::memory_order_relaxed);
-                        }
-                    }
-                    lastEncodedInjectFrameIndex = frameToProcess->frameIndex;
-                }
-                if (!isDuplicate && frameToProcess && IsInjectTextureIndexValid(frameToProcess->textureIndex)) {
-                    uint32_t& lastTextureFrame =
-                        lastEncodedFrameByTextureIndex[static_cast<size_t>(frameToProcess->textureIndex)];
-                    if (lastTextureFrame != 0 && frameToProcess->frameIndex != 0 &&
-                        frameToProcess->frameIndex <= lastTextureFrame) {
-                        LogWarn(
-                            "[EncoderThread] Texture slot reuse anomaly: tex=%d frame=%u previous=%u ring=%u "
-                            "fence=%llu ts=%lld",
-                            frameToProcess->textureIndex, frameToProcess->frameIndex, lastTextureFrame,
-                            frameToProcess->ringIndex, static_cast<unsigned long long>(frameToProcess->fenceValue),
-                            static_cast<long long>(frameToProcess->timestamp));
-                        if (media_main_g_pSharedMem) {
-                            media_main_g_pSharedMem->runtimeState.textureReuseAnomalies.fetch_add(1, std::memory_order_relaxed);
-                        }
-                    }
-                    lastTextureFrame = frameToProcess->frameIndex;
+                if (!isDuplicate && frameToProcess) {
+                    ObserveEncodedInjectLineage(*frameToProcess, "");
                 }
                 lastDeferredLineage = {};
 
@@ -583,4 +556,37 @@ void MediaEncoderSession::LoopEncode() {
                 }
             }
         }
+}
+
+void MediaEncoderSession::ObserveEncodedInjectLineage(const QueuedFrame& frame, const char* context) {
+    const ce::capture_policy::InjectLineageObservation lineage =
+        injectLineage.Observe(frame.transportGeneration, frame.frameIndex, frame.textureIndex);
+    if (lineage.generationReset &&
+        ce::capture_policy::ShouldLogInjectLineageGenerationReset(lineage.generationResetCount)) {
+        LogInfo(
+            "[EncoderThread] Inject lineage restarted%s: transport generation %u -> %u, frame=%u after "
+            "frame=%u (ring=%u tex=%d resets=%u); frame/texture-slot checks now compare within the new "
+            "generation only",
+            context, lineage.previousGeneration, frame.transportGeneration, frame.frameIndex,
+            lineage.previousGenerationLastFrame, frame.ringIndex, frame.textureIndex, lineage.generationResetCount);
+    }
+    if (lineage.lineageRegression) {
+        LogWarn("[EncoderThread] Inject lineage regression%s: encoded frame=%u after frame=%u (ring=%u tex=%d "
+                "gen=%u ts=%lld)",
+                context, frame.frameIndex, lineage.previousFrameIndex, frame.ringIndex, frame.textureIndex,
+                frame.transportGeneration, static_cast<long long>(frame.timestamp));
+        if (media_main_g_pSharedMem) {
+            media_main_g_pSharedMem->runtimeState.frameIndexRegressions.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (lineage.textureReuse) {
+        LogWarn("[EncoderThread] Texture slot reuse anomaly%s: tex=%d frame=%u previous=%u ring=%u fence=%llu "
+                "gen=%u ts=%lld",
+                context, frame.textureIndex, frame.frameIndex, lineage.previousTextureFrame, frame.ringIndex,
+                static_cast<unsigned long long>(frame.fenceValue), frame.transportGeneration,
+                static_cast<long long>(frame.timestamp));
+        if (media_main_g_pSharedMem) {
+            media_main_g_pSharedMem->runtimeState.textureReuseAnomalies.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 }

@@ -167,8 +167,7 @@ private:
     int64_t encoderGridStartQpc;
     int64_t encoderGridTickCount;
     uint64_t selectionLogCounter;
-    uint32_t lastEncodedInjectFrameIndex;
-    std::array<uint32_t, media_main_kInjectTextureSlotCount> lastEncodedFrameByTextureIndex{};
+    ce::capture_policy::InjectLineageTracker<media_main_kInjectTextureSlotCount> injectLineage{};
     InjectFrameLineage lastDeferredLineage{};
     InjectFrameLineage lastSuccessfullyEncodedInjectLineage{};
     CadenceHealthCounters cadenceCounters{};
@@ -791,6 +790,7 @@ private:
     void observeInjectFreshService(double wallServiceMs, double pureServiceMs);
     void observeInjectRepeatService(double wallServiceMs, double pureServiceMs);
     void RefreshInjectFinalOutputDisplayTiming(size_t firstNewBufferedFrame);
+    void ObserveEncodedInjectLineage(const QueuedFrame& frame, const char* context);
     void CommitWarmupSync();
     void CommitWarmupReset();
     // tryPopBufferedWgcFrameForTarget selection chunks (parameterless; they read the

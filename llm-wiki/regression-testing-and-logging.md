@@ -145,6 +145,14 @@ and ~5.2k `Post-SL overlay SUBMIT` lines; the metering pass below fixed these.
   depth), and `[VideoEncoder] Queuing audio pkt` from every 100 to every 500
   audio packets (~5-10 s; the 1 Hz `[AppDiag] consume` line and `[MuxAudio]`
   cadence already cover flow).
+- Mux write-queue pressure is edge-logged, not polled (`mediaengine/mux_queue_pressure.h`,
+  `VideoEncoder::WriteFrame`/`ObserveMuxWrite`, tests `tests/test_mux_queue_pressure.cpp`):
+  `Mux write queue reached N% of its limit` fires once per 25/50/75% band per episode and
+  `Mux write queue recovered` once below 12.5%, each with writer-vs-encoder MB/s, writer
+  busy share inside `av_interleaved_write_frame` (>=90% = output target stalling) and the
+  slowest write; a single write >=250 ms logs `Mux write blocked` at most every 5 s. Added
+  after `logs/20260927_040737` r0005 reached 421/512 MB during a network-share stall with
+  only `QUEUE STATS` INFO lines to show it.
 - Do NOT throttle the audio-sync smoking-gun lines: `[AppDiag] place`/`consume`
   stay at their 1 s cadence (they pin the app-track-silence/backlog failure
   class; ~2 lines/s per app source is the accepted cost), as do

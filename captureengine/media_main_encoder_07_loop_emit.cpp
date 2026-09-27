@@ -389,41 +389,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                         smoothedInjectFenceMs = smoothedInjectFenceMs * 0.90 + currentFenceMs * 0.10;
                     }
 
-                    if (catchupFrame.frameIndex != 0) {
-                        if (lastEncodedInjectFrameIndex != 0 &&
-                            catchupFrame.frameIndex < lastEncodedInjectFrameIndex) {
-                            LogWarn(
-                                "[EncoderThread] Inject lineage regression during catch-up: encoded "
-                                "frame=%u after frame=%u (ring=%u tex=%d ts=%lld)",
-                                catchupFrame.frameIndex, lastEncodedInjectFrameIndex,
-                                catchupFrame.ringIndex, catchupFrame.textureIndex,
-                                static_cast<long long>(catchupFrame.timestamp));
-                            if (media_main_g_pSharedMem) {
-                                media_main_g_pSharedMem->runtimeState.frameIndexRegressions.fetch_add(
-                                    1, std::memory_order_relaxed);
-                            }
-                        }
-                        lastEncodedInjectFrameIndex = catchupFrame.frameIndex;
-                    }
-                    if (IsInjectTextureIndexValid(catchupFrame.textureIndex)) {
-                        uint32_t& lastTextureFrame =
-                            lastEncodedFrameByTextureIndex[static_cast<size_t>(catchupFrame.textureIndex)];
-                        if (lastTextureFrame != 0 && catchupFrame.frameIndex != 0 &&
-                            catchupFrame.frameIndex <= lastTextureFrame) {
-                            LogWarn(
-                                "[EncoderThread] Texture slot reuse anomaly during catch-up: tex=%d "
-                                "frame=%u previous=%u ring=%u fence=%llu ts=%lld",
-                                catchupFrame.textureIndex, catchupFrame.frameIndex, lastTextureFrame,
-                                catchupFrame.ringIndex,
-                                static_cast<unsigned long long>(catchupFrame.fenceValue),
-                                static_cast<long long>(catchupFrame.timestamp));
-                            if (media_main_g_pSharedMem) {
-                                media_main_g_pSharedMem->runtimeState.textureReuseAnomalies.fetch_add(
-                                    1, std::memory_order_relaxed);
-                            }
-                        }
-                        lastTextureFrame = catchupFrame.frameIndex;
-                    }
+                    ObserveEncodedInjectLineage(catchupFrame, " during catch-up");
 
                     if (media_main_g_pSharedMem) {
                         if (currentEncodeMs > frameIntervalMs * 1.10) {

@@ -326,6 +326,10 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
     AVPacket* clonePkt = av_packet_clone(pkt);
     if (clonePkt) {
         bool rejectedByLiveBudget = false;
+        ce::mux::MuxQueuePressureUpdate pressure;
+        MuxPressureWindow pressureWindow;
+        size_t pressureQueuedBytes = 0;
+        uint32_t pressureQueuedPackets = 0;
         {
             std::lock_guard<std::mutex> lock(queueMutex);
             const size_t queuedBytes = currentQueueBytes.load(std::memory_order_relaxed);
@@ -337,7 +341,25 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
                 packetQueue.push(clonePkt);
                 currentQueueBytes += clonedBytes;
                 currentQueuePackets.store(SaturatingToUint32(packetQueue.size()), std::memory_order_relaxed);
+
+                muxEnqueuedBytesTotal += clonedBytes;
+                const uint64_t nowMs = GetTickCount64();
+                pressureQueuedBytes = currentQueueBytes.load(std::memory_order_relaxed);
+                pressureQueuedPackets = SaturatingToUint32(packetQueue.size());
+                pressure = muxQueuePressure.Observe(pressureQueuedBytes, queueLimit, nowMs);
+                if (pressure.event != ce::mux::MuxQueuePressureEvent::kNone) {
+                    pressureWindow = TakeMuxPressureWindowLocked(nowMs);
+                } else if (!muxQueuePressure.EpisodeActive() &&
+                           (nowMs < muxPressureWindowStartMs ||
+                            nowMs - muxPressureWindowStartMs >= ce::mux::kMuxPressureBaselineRefreshMs)) {
+                    // Keep the baseline recent so a raised report describes
+                    // the seconds that led up to it, not the whole recording.
+                    TakeMuxPressureWindowLocked(nowMs);
+                }
             }
+        }
+        if (pressure.event != ce::mux::MuxQueuePressureEvent::kNone) {
+            LogMuxQueuePressure(pressure, pressureWindow, pressureQueuedBytes, pressureQueuedPackets, queueLimit);
         }
         if (rejectedByLiveBudget) {
             av_packet_free(&clonePkt);
@@ -354,6 +376,93 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         // and end the session cleanly instead of corrupting the rest.
         RequestOutputFailure("clone_packet", AVERROR(ENOMEM));
     }
+}
+
+void VideoEncoder::ResetMuxQueuePressure() {
+    std::lock_guard<std::mutex> lock(queueMutex);
+    muxQueuePressure.Reset();
+    muxEnqueuedBytesTotal = 0;
+    muxPressureWindowStartMs = GetTickCount64();
+    muxPressureWindowEnqueuedBytes = 0;
+    muxPressureWindowWrittenBytes = 0;
+    muxPressureWindowBusyUs = 0;
+    muxWriterBytesWritten.store(0, std::memory_order_relaxed);
+    muxWriterBusyUs.store(0, std::memory_order_relaxed);
+    muxWriterMaxWriteUs.store(0, std::memory_order_relaxed);
+    lastSlowMuxWriteLogMs = 0;
+    suppressedSlowMuxWrites = 0;
+}
+
+VideoEncoder::MuxPressureWindow VideoEncoder::TakeMuxPressureWindowLocked(uint64_t nowMs) {
+    const uint64_t written = muxWriterBytesWritten.load(std::memory_order_relaxed);
+    const uint64_t busyUs = muxWriterBusyUs.load(std::memory_order_relaxed);
+    MuxPressureWindow window;
+    window.windowMs = nowMs >= muxPressureWindowStartMs ? nowMs - muxPressureWindowStartMs : 0;
+    window.maxWriteUs = muxWriterMaxWriteUs.exchange(0, std::memory_order_relaxed);
+    window.rates = ce::mux::ComputeMuxWriterWindowRates(written - muxPressureWindowWrittenBytes,
+                                                        muxEnqueuedBytesTotal - muxPressureWindowEnqueuedBytes,
+                                                        busyUs - muxPressureWindowBusyUs, window.windowMs * 1000u);
+    muxPressureWindowStartMs = nowMs;
+    muxPressureWindowEnqueuedBytes = muxEnqueuedBytesTotal;
+    muxPressureWindowWrittenBytes = written;
+    muxPressureWindowBusyUs = busyUs;
+    return window;
+}
+
+void VideoEncoder::LogMuxQueuePressure(const ce::mux::MuxQueuePressureUpdate& update, const MuxPressureWindow& window,
+                                       size_t queuedBytes, uint32_t queuedPackets, size_t limitBytes) {
+    constexpr double kMiB = 1024.0 * 1024.0;
+    const ce::mux::MuxWriterWindowRates& rates = window.rates;
+    if (update.event == ce::mux::MuxQueuePressureEvent::kRaised) {
+        // A writer busy in its write calls nearly the whole window is waiting
+        // on the output target; an idle one was not being serviced.
+        const bool writerBlockedOnOutput = rates.busyPermille >= 900;
+        DLL_Log(
+            "[VideoEncoder] WARNING: Mux write queue reached %u%% of its limit (%.1f/%.1f MB, %u packets, "
+            "episode %llums). Last %llums: writer %.2f MB/s vs encoder %.2f MB/s, writer busy in writes %u.%u%%, "
+            "slowest write %.1fms. %s Packets are never dropped; at 100%% the encoder is held back (capture "
+            "stutter).",
+            update.fillPermille / 10u, static_cast<double>(queuedBytes) / kMiB, static_cast<double>(limitBytes) / kMiB,
+            queuedPackets, static_cast<unsigned long long>(update.episodeDurationMs),
+            static_cast<unsigned long long>(window.windowMs), static_cast<double>(rates.writerBytesPerSecond) / kMiB,
+            static_cast<double>(rates.encoderBytesPerSecond) / kMiB, rates.busyPermille / 10u, rates.busyPermille % 10u,
+            static_cast<double>(window.maxWriteUs) / 1000.0,
+            writerBlockedOnOutput ? "The output target (disk or network share) is not keeping up."
+                                  : "The writer was mostly idle; its thread is not being serviced.");
+        return;
+    }
+    DLL_Log(
+        "[VideoEncoder] Mux write queue recovered: %u%% (%.1f MB) after a %llums episode that peaked at %.1f MB "
+        "(band %u%%). Last %llums: writer %.2f MB/s vs encoder %.2f MB/s, writer busy in writes %u.%u%%, slowest "
+        "write %.1fms",
+        update.fillPermille / 10u, static_cast<double>(queuedBytes) / kMiB,
+        static_cast<unsigned long long>(update.episodeDurationMs), static_cast<double>(update.episodePeakBytes) / kMiB,
+        update.bandPermille / 10u, static_cast<unsigned long long>(window.windowMs),
+        static_cast<double>(rates.writerBytesPerSecond) / kMiB, static_cast<double>(rates.encoderBytesPerSecond) / kMiB,
+        rates.busyPermille / 10u, rates.busyPermille % 10u, static_cast<double>(window.maxWriteUs) / 1000.0);
+}
+
+void VideoEncoder::ObserveMuxWrite(size_t packetBytes, uint64_t writeUs) {
+    muxWriterBytesWritten.fetch_add(packetBytes, std::memory_order_relaxed);
+    muxWriterBusyUs.fetch_add(writeUs, std::memory_order_relaxed);
+    UpdateAtomicPeak(muxWriterMaxWriteUs, SaturatingToUint32(writeUs));
+    if (!ce::mux::IsSlowMuxWrite(writeUs)) {
+        return;
+    }
+    const uint64_t nowMs = GetTickCount64();
+    if (!ce::mux::ShouldLogSlowMuxWrite(nowMs, lastSlowMuxWriteLogMs)) {
+        ++suppressedSlowMuxWrites;
+        return;
+    }
+    constexpr double kMiB = 1024.0 * 1024.0;
+    DLL_Log(
+        "[VideoEncoder] WARNING: Mux write blocked for %.1fms (%zu bytes; queue %.1f/%.1f MB; %u further slow "
+        "write(s) since the last report). The output target stalled.",
+        static_cast<double>(writeUs) / 1000.0, packetBytes,
+        static_cast<double>(currentQueueBytes.load(std::memory_order_relaxed)) / kMiB,
+        static_cast<double>(ActiveQueueLimitBytes()) / kMiB, suppressedSlowMuxWrites);
+    lastSlowMuxWriteLogMs = nowMs;
+    suppressedSlowMuxWrites = 0;
 }
 
 void VideoEncoder::PublishRuntimeState() {

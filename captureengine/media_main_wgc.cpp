@@ -233,10 +233,6 @@ bool MatchesInjectFrameLineage(const InjectFrameLineage& lhs, const InjectFrameL
            lhs.fenceValue == rhs.fenceValue && lhs.ringIndex == rhs.ringIndex && lhs.timestamp == rhs.timestamp;
 }
 
-bool IsInjectTextureIndexValid(int32_t textureIndex) {
-    return textureIndex >= 0 && textureIndex < media_main_kInjectTextureSlotCount;
-}
-
 void ReleaseStandaloneWgcQueuedFrame(QueuedFrame& frame) {
     if (!frame.isInjectMode && frame.texture) {
         frame.texture->Release();

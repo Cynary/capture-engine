@@ -220,7 +220,6 @@ bool MatchesInjectFrameLineage(const QueuedFrame& frame, const InjectFrameLineag
 
 bool MatchesInjectFrameLineage(const InjectFrameLineage& lhs, const InjectFrameLineage& rhs);
 
-bool IsInjectTextureIndexValid(int32_t textureIndex);
 
 bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* threadName);
 

@@ -229,7 +229,7 @@ bool MediaEncoderSession::Init() {
     encoderGridStartQpc = 0;
     encoderGridTickCount = 0;
     selectionLogCounter = 0;
-    lastEncodedInjectFrameIndex = 0;
+    injectLineage.Reset();
     injectWorstSourceFpsX100 = std::numeric_limits<uint32_t>::max();
     injectBestSourceFpsX100 = 0;
     injectWorstSourceJitterUs = 0;

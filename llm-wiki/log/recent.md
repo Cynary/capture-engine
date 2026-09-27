@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-09-27 - Session 20260927_040737 review: clean; two logging gaps closed
+
+- 0.1.6843, 10 recordings (r0001 inject Talos with FSR FG, r0002-r0010 WGC): all `healthy`, CFR coverage
+  `missing=0`, post-mux audio/video ends within 1 us, no underruns/trims, no ERROR lines.
+- r0005: mux write queue grew to 421/512 MB over ~45 s (output on a network share) and drained in ~5 s; no
+  backpressure, but only `QUEUE STATS` INFO recorded it. Added band/recovery warnings with writer attribution
+  and a rate-limited slow-write line (`mux_queue_pressure.h`).
+- r0001: swapchain rebuild -> transport generation 1 -> 2 with `frameIndex` restarting at 1 logged one
+  `Inject lineage regression` + 16 `Texture slot reuse anomaly` false positives. Checks are now per
+  generation (`inject_lineage.h`); the stale `lastEncodedFrameByTextureIndex` also was never reset per session.
+- Not hardware-verified yet: expect `Inject lineage restarted ... generation 1 -> 2` instead of those warnings,
+  and `Mux write queue reached 25%` on the next slow-output session.
+
 ### 2026-09-27 - Talos "windowed" start fatal: hidden-window create dropped the swapchain queue
 
 - `logs/20260927_034946` (0.1.6842): the resize fix above is confirmed on hardware (4K -> 1440p with Steam, no crash).

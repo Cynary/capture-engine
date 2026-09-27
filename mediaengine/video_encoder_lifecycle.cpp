@@ -141,6 +141,7 @@ void VideoEncoder::CleanupResources() {
     muxBackpressureCount.store(0, std::memory_order_relaxed);
     muxBackpressureWaitUs.store(0, std::memory_order_relaxed);
     muxBackpressureMaxWaitUs.store(0, std::memory_order_relaxed);
+    ResetMuxQueuePressure();
     packetDurationClampCount.store(0, std::memory_order_relaxed);
     negativePtsCount.store(0, std::memory_order_relaxed);
     nonMonotonicPtsCount.store(0, std::memory_order_relaxed);
@@ -460,7 +461,13 @@ void VideoEncoder::AsyncWriteLoop() {
                 const int writtenSampleRate = fmtCtx->streams[pkt->stream_index]->codecpar
                                                   ? fmtCtx->streams[pkt->stream_index]->codecpar->sample_rate
                                                   : 0;
+                // The muxer takes ownership of the payload, so size it before the call.
+                const size_t writtenBytes = static_cast<size_t>(std::max(pkt->size, 0));
+                const auto writeStart = std::chrono::steady_clock::now();
                 int ret = WriteInterleavedPacket(pkt);
+                const auto writeElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - writeStart);
+                ObserveMuxWrite(writtenBytes, static_cast<uint64_t>(std::max<int64_t>(writeElapsed.count(), 0)));
                 if (ret >= 0) {
                     RecordWrittenPacketTimeline(writtenStreamIndex, writtenPts, writtenDts, writtenDuration,
                                                 writtenTimeBase, writtenTerminalDiscardSamples, writtenSampleRate);
