@@ -188,6 +188,55 @@ inline int DetectMarkerCenterFrame(const float* captured, size_t frames, int sam
     return static_cast<int>(starts[peakIdx]) + windowFrames / 2;
 }
 
+// Loopback that must be captured past the marker burst's end before a shot may stop early.
+inline constexpr double kProbeEarlyStopGuardSeconds = 0.040;
+// The newest detector window must sit this far below the marker-center window (same factor as the
+// detector's own peak-over-floor confidence), proving the burst has fully decayed.
+inline constexpr double kProbeEarlyStopDecayRatio = 8.0;
+
+// Early-stop decision for one probe shot. A shot used to keep capturing a fixed ~0.5 s past the
+// marker although a typical render->loopback path lands the marker ~100 ms into the capture, so the
+// 5-shot probe cost ~3.2 s on the recording-start path. Returns the marker center once the burst has
+// been captured COMPLETELY: the detector finds a confident burst, at least half a marker plus
+// kProbeEarlyStopGuardSeconds of loopback follows that center, and the newest window has decayed
+// kProbeEarlyStopDecayRatio below the center window. Otherwise -1 and the caller keeps capturing up
+// to its unchanged full window. With the whole Hann burst and a quiet guard in the buffer, later
+// frames hold no stronger marker window, so the center equals what DetectMarkerCenterFrame reports
+// on a full-length capture: this decides only WHEN a shot stops, never what it measures.
+inline int DetectCompletedMarkerCenterFrame(const float* captured, size_t frames, const ProbeMarkerSpec& spec) {
+    if (!captured || !spec.valid || spec.markerFrames <= 0 || spec.sampleRate <= 0.0) {
+        return -1;
+    }
+    const int sampleRate = static_cast<int>(spec.sampleRate);
+    const size_t guardFrames = static_cast<size_t>(spec.sampleRate * kProbeEarlyStopGuardSeconds);
+    const size_t halfMarkerFrames = static_cast<size_t>(spec.markerFrames / 2);
+    const size_t minFrames =
+        static_cast<size_t>(std::max(0, spec.leadInFrames)) + static_cast<size_t>(spec.markerFrames) + guardFrames;
+    if (frames < minFrames) {
+        return -1;
+    }
+    const int center = DetectMarkerCenterFrame(captured, frames, sampleRate, spec.markerFreqHz);
+    if (center < 0) {
+        return -1;
+    }
+    if (frames < static_cast<size_t>(center) + halfMarkerFrames + guardFrames) {
+        return -1;  // the burst (or its quiet guard) is not fully captured yet
+    }
+    // Same default window as DetectMarkerCenterFrame, whose center is windowStart + window/2.
+    const int windowFrames = std::max(64, sampleRate / 200);
+    if (center < windowFrames / 2 || frames < static_cast<size_t>(windowFrames)) {
+        return -1;
+    }
+    const double centerPower =
+        GoertzelPower(captured + (center - windowFrames / 2), windowFrames, spec.sampleRate, spec.markerFreqHz);
+    const double tailPower = GoertzelPower(captured + (frames - static_cast<size_t>(windowFrames)), windowFrames,
+                                           spec.sampleRate, spec.markerFreqHz);
+    if (!(centerPower > 0.0) || tailPower * kProbeEarlyStopDecayRatio > centerPower) {
+        return -1;
+    }
+    return center;
+}
+
 // latency = loopback-captured marker-center QPC - render presentation QPC of the marker center.
 // Both inputs are in 100-ns QPC units. Returns a signed value; the caller validates plausibility.
 inline double ComputeRenderLatencyMs(uint64_t loopbackMarkerQpc100ns, uint64_t renderMarkerQpc100ns) {
@@ -309,7 +358,7 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
 
 // Attach (or detach with nullptr) the controller-owned session latency channel from
 // common/av_sync_latency_channel.h. Without it the cache above is process-local, and because the
-// media process is disposable that means every recording pays the full ~3.2 s measurement on the
+// media process is disposable that means every recording pays the full measurement on the
 // recording-start path. Pass an incompatible block and it is refused, never trusted. Call before
 // MeasureRenderEndpointLatency; a void* keeps the mediaengine ABI free of the block type.
 void SetRenderLatencyChannel(void* channelBlock);

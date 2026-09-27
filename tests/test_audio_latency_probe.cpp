@@ -194,3 +194,120 @@ TEST(AudioLatencyProbeTest, CacheKeySanitizesDelimiters) {
     EXPECT_EQ(key.find('\r'), std::string::npos);
     EXPECT_EQ(key, "dev_with_bad_chars|sr48000|ch2|bits32|align8|mask3|period100000|min30000");
 }
+
+namespace {
+// Feed a loopback capture to the early-stop helper in 10 ms packets, the way MeasureOnceMs does,
+// and return the capture length at the first packet where the shot may stop (0 = never stopped).
+struct EarlyStopScan {
+    size_t stopFrames = 0;
+    int center = -1;
+};
+
+EarlyStopScan ScanForEarlyStop(const std::vector<float>& cap, const ProbeMarkerSpec& spec) {
+    EarlyStopScan scan;
+    const size_t packetFrames = static_cast<size_t>(spec.sampleRate / 100.0);
+    for (size_t frames = packetFrames; frames <= cap.size(); frames += packetFrames) {
+        const int center = DetectCompletedMarkerCenterFrame(cap.data(), frames, spec);
+        if (center >= 0) {
+            scan.stopFrames = frames;
+            scan.center = center;
+            return scan;
+        }
+    }
+    return scan;
+}
+
+// The probe's full per-shot window: marker waveform plus 0.5 s of loopback.
+size_t FullShotWindowFrames(const ProbeMarkerSpec& spec) {
+    return static_cast<size_t>(spec.totalFrames()) + static_cast<size_t>(spec.sampleRate / 2.0);
+}
+}  // namespace
+
+// Regression: every shot captured the full ~620 ms window although the marker lands ~100 ms in
+// (20260927_195021: centerFrame=18240 of capFrames=119040 at 192 kHz, 5 shots = 3.17 s of start
+// delay). The early stop must end the shot shortly after the burst AND report exactly the center a
+// full-length capture yields, so the measured latency is unchanged.
+TEST(AudioLatencyProbeTest, EarlyStopEndsShotAfterBurstWithFullCaptureCenter) {
+    for (int rate : {44100, 48000, 96000, 192000}) {
+        const ProbeMarkerSpec spec = ResolveProbeMarkerSpec(rate);
+        ASSERT_TRUE(spec.valid);
+        for (int latencyMs : {0, 16, 33, 120}) {
+            const int preFrames = spec.leadInFrames + rate * latencyMs / 1000;
+            const int postFrames = static_cast<int>(FullShotWindowFrames(spec)) - preFrames - spec.markerFrames;
+            ASSERT_GT(postFrames, 0);
+            const std::vector<float> cap = MakeSyntheticCapture(rate, spec.markerFreqHz, preFrames, spec.markerFrames,
+                                                                postFrames, spec.amplitude, 0.002, 21);
+            const int fullCenter = DetectMarkerCenterFrame(cap.data(), cap.size(), rate, spec.markerFreqHz);
+            ASSERT_GE(fullCenter, 0) << "rate=" << rate << " latencyMs=" << latencyMs;
+
+            const EarlyStopScan scan = ScanForEarlyStop(cap, spec);
+            ASSERT_GT(scan.stopFrames, 0u) << "rate=" << rate << " latencyMs=" << latencyMs;
+            EXPECT_EQ(scan.center, fullCenter) << "rate=" << rate << " latencyMs=" << latencyMs;
+            // The post-stop detection in MeasureOnceMs runs on exactly this prefix.
+            EXPECT_EQ(DetectMarkerCenterFrame(cap.data(), scan.stopFrames, rate, spec.markerFreqHz), fullCenter);
+
+            // It stops only after the burst end plus the guard ...
+            const size_t burstEnd = static_cast<size_t>(preFrames + spec.markerFrames);
+            EXPECT_GE(scan.stopFrames, burstEnd + static_cast<size_t>(rate * kProbeEarlyStopGuardSeconds) -
+                                           static_cast<size_t>(rate / 200))
+                << "rate=" << rate << " latencyMs=" << latencyMs;
+            // ... and within ~one detection window plus one packet of that point.
+            EXPECT_LE(scan.stopFrames, burstEnd + static_cast<size_t>(rate * (kProbeEarlyStopGuardSeconds + 0.025)))
+                << "rate=" << rate << " latencyMs=" << latencyMs;
+        }
+    }
+}
+
+TEST(AudioLatencyProbeTest, EarlyStopNeverFiresInsideTheBurst) {
+    const int rate = 48000;
+    const ProbeMarkerSpec spec = ResolveProbeMarkerSpec(rate);
+    const int preFrames = spec.leadInFrames + rate * 30 / 1000;
+    const std::vector<float> cap =
+        MakeSyntheticCapture(rate, spec.markerFreqHz, preFrames, spec.markerFrames, rate / 2, spec.amplitude, 0.0, 5);
+    // Every prefix that ends before the burst has decayed plus the guard must keep capturing.
+    const size_t burstEnd = static_cast<size_t>(preFrames + spec.markerFrames);
+    const size_t guardFrames = static_cast<size_t>(rate * kProbeEarlyStopGuardSeconds);
+    for (size_t frames = 64; frames + static_cast<size_t>(rate / 200) < burstEnd + guardFrames; frames += 97) {
+        EXPECT_LT(DetectCompletedMarkerCenterFrame(cap.data(), frames, spec), 0) << "frames=" << frames;
+    }
+}
+
+TEST(AudioLatencyProbeTest, EarlyStopNeverFiresWithoutMarker) {
+    const int rate = 48000;
+    const ProbeMarkerSpec spec = ResolveProbeMarkerSpec(rate);
+    std::vector<float> cap =
+        MakeSyntheticCapture(rate, spec.markerFreqHz, static_cast<int>(FullShotWindowFrames(spec)), 0, 0, 0.0, 0.02, 9);
+    // Loud unrelated program audio must not look like a finished marker either.
+    const double w = 2.0 * kPi * 440.0 / rate;
+    for (size_t i = 0; i < cap.size(); ++i) {
+        cap[i] += static_cast<float>(0.5 * std::sin(w * static_cast<double>(i)));
+    }
+    EXPECT_EQ(ScanForEarlyStop(cap, spec).stopFrames, 0u);
+}
+
+TEST(AudioLatencyProbeTest, EarlyStopSurvivesProgramAudioAndMatchesFullCapture) {
+    const int rate = 48000;
+    const ProbeMarkerSpec spec = ResolveProbeMarkerSpec(rate);
+    const int preFrames = spec.leadInFrames + rate * 45 / 1000;
+    const int postFrames = static_cast<int>(FullShotWindowFrames(spec)) - preFrames - spec.markerFrames;
+    std::vector<float> cap = MakeSyntheticCapture(rate, spec.markerFreqHz, preFrames, spec.markerFrames, postFrames,
+                                                  spec.amplitude, 0.01, 13);
+    const double w = 2.0 * kPi * 440.0 / rate;
+    for (size_t i = 0; i < cap.size(); ++i) {
+        cap[i] += static_cast<float>(0.5 * std::sin(w * static_cast<double>(i)));
+    }
+    const int fullCenter = DetectMarkerCenterFrame(cap.data(), cap.size(), rate, spec.markerFreqHz);
+    ASSERT_GE(fullCenter, 0);
+    const EarlyStopScan scan = ScanForEarlyStop(cap, spec);
+    ASSERT_GT(scan.stopFrames, 0u);
+    EXPECT_EQ(scan.center, fullCenter);
+    EXPECT_LT(scan.stopFrames, FullShotWindowFrames(spec) / 2);
+}
+
+TEST(AudioLatencyProbeTest, EarlyStopRejectsInvalidInput) {
+    const ProbeMarkerSpec spec = ResolveProbeMarkerSpec(48000);
+    const std::vector<float> cap(48000, 0.0f);
+    EXPECT_LT(DetectCompletedMarkerCenterFrame(nullptr, cap.size(), spec), 0);
+    EXPECT_LT(DetectCompletedMarkerCenterFrame(cap.data(), cap.size(), ProbeMarkerSpec{}), 0);
+    EXPECT_LT(DetectCompletedMarkerCenterFrame(cap.data(), 10, spec), 0);
+}

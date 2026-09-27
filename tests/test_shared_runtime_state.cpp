@@ -543,6 +543,40 @@ TEST(SharedDefsTest, RecordingStopCancelsOnlyBeforeLiveOutputExists) {
     EXPECT_EQ(SelectStopTransition(CapturePipelinePhase::kStopping, 0), CapturePipelinePhase::kStopping);
 }
 
+// Regression (20260927_195021): the controller logged "Recording is live ... 6375 ms" although
+// media went live at +5453 ms, because liveness is only polled once per second. The media live
+// stamp (same GetTickCount64 clock) is authoritative; implausible stamps fall back honestly.
+TEST(SharedDefsTest, RecordingStartupTimingUsesMediaLiveStampNotPollObservation) {
+    using ce::recording_lifecycle::ResolveRecordingStartupTiming;
+
+    const auto exact = ResolveRecordingStartupTiming(1000000, 1005453, 1006375);
+    EXPECT_TRUE(exact.exact);
+    EXPECT_EQ(exact.startupMs, 5453u);
+    EXPECT_EQ(exact.observedMs, 6375u);
+
+    // Stamp not yet published (isRecording is set first) -> observation time, flagged inexact.
+    const auto noStamp = ResolveRecordingStartupTiming(1000000, 0, 1006375);
+    EXPECT_FALSE(noStamp.exact);
+    EXPECT_EQ(noStamp.startupMs, 6375u);
+    EXPECT_EQ(noStamp.observedMs, 6375u);
+
+    // A stale stamp from before this request, or one after the observation, is never trusted.
+    EXPECT_FALSE(ResolveRecordingStartupTiming(1000000, 999999, 1006375).exact);
+    EXPECT_FALSE(ResolveRecordingStartupTiming(1000000, 1006376, 1006375).exact);
+    EXPECT_EQ(ResolveRecordingStartupTiming(1000000, 999999, 1006375).startupMs, 6375u);
+
+    // Boundaries: live exactly at the request or exactly at the observation are plausible.
+    EXPECT_EQ(ResolveRecordingStartupTiming(1000000, 1000000, 1000500).startupMs, 0u);
+    EXPECT_EQ(ResolveRecordingStartupTiming(1000000, 1000500, 1000500).startupMs, 500u);
+
+    // No armed request (already consumed) or a clock going backwards reports nothing.
+    const auto disarmed = ResolveRecordingStartupTiming(0, 1005453, 1006375);
+    EXPECT_FALSE(disarmed.exact);
+    EXPECT_EQ(disarmed.startupMs, 0u);
+    EXPECT_EQ(disarmed.observedMs, 0u);
+    EXPECT_EQ(ResolveRecordingStartupTiming(1000000, 1000000, 999999).observedMs, 0u);
+}
+
 TEST(SharedDefsTest, StopAndLiveCommitHaveOneAtomicWinner) {
     std::atomic<uint32_t> phase{static_cast<uint32_t>(CapturePipelinePhase::kIdle)};
     std::atomic<bool> requested{true};

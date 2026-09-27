@@ -42,7 +42,7 @@ int MediaProcessSession::Init() {
 
     // Map the inherited session A/V latency channel before the media engine loads: the
     // render->loopback probe runs inside ensureMediaEngineReady() below, and this process is
-    // disposable, so without the channel it would re-measure for ~3.2 s on every recording start.
+    // disposable, so without the channel it would re-measure (about a second) on every recording start.
     latencyChannel = ce::av_sync::MapInheritedLatencyChannel(ParseInheritedLatencyChannelHandle());
 
     if (!ensureMediaEngineReady()) {

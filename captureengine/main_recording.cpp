@@ -1,6 +1,7 @@
 #include "main_internal.h"
 
 #include "../common/live_stream_config.h"
+#include "../common/recording_lifecycle.h"
 
 namespace {
 bool IsControllerLiveStreamOutput() {
@@ -425,10 +426,19 @@ void CheckChildProcessHealth() {
                 // ack, is the moment a recording actually exists; anything stopped before it
                 // produces no output at all, so the elapsed time is reported to make that
                 // startup window visible in the log.
+                // This check runs once per second, so the elapsed time comes from media's own live
+                // stamp; the observation delay is logged separately.
                 const uint64_t requestTick = main_g_RecordingStartRequestTick.exchange(0, std::memory_order_acq_rel);
-                LogInfo("[Controller] Recording is live (%s, %llu ms after the start request)",
-                        recordingStartIntent == RecordingStartIntent::AudioOnly ? "audio-only" : "video",
-                        requestTick ? static_cast<unsigned long long>(GetTickCount64() - requestTick) : 0ULL);
+                const ce::recording_lifecycle::RecordingStartupTiming timing =
+                    ce::recording_lifecycle::ResolveRecordingStartupTiming(
+                        requestTick, sharedMemory->runtimeState.recordingStartTime.load(std::memory_order_acquire),
+                        GetTickCount64());
+                LogInfo(
+                    "[Controller] Recording is live (%s, %llu ms after the start request; observed after %llu ms, "
+                    "liveStamp=%s)",
+                    recordingStartIntent == RecordingStartIntent::AudioOnly ? "audio-only" : "video",
+                    static_cast<unsigned long long>(timing.startupMs),
+                    static_cast<unsigned long long>(timing.observedMs), timing.exact ? "media" : "unavailable");
                 recordingStartIntent = RecordingStartIntent::Idle;
                 main_g_RecordingStartIntent.store(RecordingStartIntent::Idle, std::memory_order_release);
             }

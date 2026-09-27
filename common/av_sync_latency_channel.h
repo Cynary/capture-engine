@@ -2,8 +2,9 @@
 
 // Session-scoped render-endpoint latency channel.
 //
-// The render->loopback A/V latency probe (mediaengine/audio_latency_probe.{h,cpp}) costs about
-// 3.2 s per measurement and its result is cached only in process memory. That was designed as
+// The render->loopback A/V latency probe (mediaengine/audio_latency_probe.{h,cpp}) cost about
+// 3.2 s per measurement when this channel was added (shots now stop once their marker is captured,
+// typically under 1 s in total) and its result is cached only in process memory. That was designed as
 // "one probe per fresh CE process", but the media process is DISPOSABLE: the controller spawns it
 // on the recording hotkey and it exits after every stop to release GPU VRAM. The process-memory
 // cache therefore never hits, and every single recording paid the full probe on the start path -

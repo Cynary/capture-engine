@@ -289,7 +289,7 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
     }
 
     // The disposable media child inherits the controller-lifetime A/V latency channel so the
-    // ~3.2 s render->loopback probe runs once per CE session instead of once per recording. The
+    // render->loopback probe runs once per CE session instead of once per recording. The
     // handle belongs to the controller and must outlive this spawn, so unlike childEndpoint it is
     // neither un-inherited nor closed below. A null handle is not an error: the child then probes.
     HANDLE latencyChannel = nullptr;

@@ -53,4 +53,35 @@ inline CapturePipelinePhase BeginStop(std::atomic<uint32_t>& phase, uint32_t liv
     }
 }
 
+// Startup latency for the controller's "Recording is live" line. The controller only notices
+// liveness in its once-per-second health poll, so the observation alone overstated startup by up
+// to a second (20260927_195021: media live +5453 ms, logged +6375 ms). Media stamps
+// runtimeState.recordingStartTime with GetTickCount64() at the exact live transition, the same
+// system-wide clock as the controller's request tick, so that stamp is used whenever it is
+// plausible: at or after the request and not after the observation. A missing or stale stamp
+// falls back to the observation time with exact=false instead of reporting a wrong value.
+struct RecordingStartupTiming {
+    uint64_t startupMs = 0;   // start request -> media live (observation time when !exact)
+    uint64_t observedMs = 0;  // start request -> controller observation
+    bool exact = false;       // startupMs comes from the media live stamp
+};
+
+inline RecordingStartupTiming ResolveRecordingStartupTiming(uint64_t requestTick, int64_t liveStampTick,
+                                                            uint64_t observedTick) {
+    RecordingStartupTiming timing;
+    if (requestTick == 0 || observedTick < requestTick) {
+        return timing;
+    }
+    timing.observedMs = observedTick - requestTick;
+    timing.startupMs = timing.observedMs;
+    if (liveStampTick > 0) {
+        const uint64_t liveTick = static_cast<uint64_t>(liveStampTick);
+        if (liveTick >= requestTick && liveTick <= observedTick) {
+            timing.startupMs = liveTick - requestTick;
+            timing.exact = true;
+        }
+    }
+    return timing;
+}
+
 }  // namespace ce::recording_lifecycle

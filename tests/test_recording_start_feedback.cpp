@@ -420,6 +420,14 @@ TEST(RecordingStartFeedbackSourceTest, ControllerReportsRecordingLiveOnlyWhenMed
     ASSERT_NE(isRecording, std::string::npos);
     const size_t live = source.find("Recording is live", isRecording);
     EXPECT_NE(live, std::string::npos);
+
+    // The health check polls once per second; the reported startup must come from media's own
+    // live stamp, not from when the poll happened to notice (20260927_195021: +5453 vs +6375 ms).
+    const size_t resolve = source.find("ce::recording_lifecycle::ResolveRecordingStartupTiming(", isRecording);
+    ASSERT_NE(resolve, std::string::npos);
+    EXPECT_LT(resolve, live);
+    EXPECT_NE(source.find("runtimeState.recordingStartTime.load(std::memory_order_acquire)", resolve),
+              std::string::npos);
 }
 
 // The controller's own evidence for the aborted case: how long the start had been pending when
@@ -483,4 +491,29 @@ TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeIsSharedAcrossDisposabl
     // The persistent endpoint-latency file stays banned; the channel is memory only.
     EXPECT_NE(probe.find("cacheDir=deprecated"), std::string::npos);
     EXPECT_NE(probe.find("legacyDiskCache=deleted"), std::string::npos);
+}
+
+// Each probe shot stops once its marker burst is fully captured instead of always recording the
+// full ~0.62 s window (20260927_195021: 5 shots = 3.17 s of recording-start delay). The full window
+// must stay as the upper bound for deep render paths, and the stop reason must stay in the log.
+TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeShotsStopOnceTheMarkerIsCaptured) {
+    const std::string probe = ReadSource("mediaengine/audio_latency_probe.cpp");
+    ASSERT_FALSE(probe.empty());
+
+    const size_t shot = probe.find("bool MeasureOnceMs(");
+    ASSERT_NE(shot, std::string::npos);
+    const size_t early =
+        probe.find("DetectCompletedMarkerCenterFrame(capturedMono.data(), capturedMono.size(), spec)", shot);
+    const size_t full = probe.find("capturedMono.size() >= fullWindowFrames", shot);
+    const size_t detect = probe.find("DetectMarkerCenterFrame(capturedMono.data(), capturedMono.size()", shot);
+    ASSERT_NE(early, std::string::npos);
+    ASSERT_NE(full, std::string::npos);
+    ASSERT_NE(detect, std::string::npos);
+    // The early stop only ends the capture; the measurement still comes from the same detector
+    // over everything captured.
+    EXPECT_LT(early, detect);
+    EXPECT_LT(full, detect);
+    EXPECT_NE(probe.find("stopReason = \"marker_complete\"", shot), std::string::npos);
+    EXPECT_NE(probe.find("stopReason = \"full_window\"", shot), std::string::npos);
+    EXPECT_NE(probe.find("confidence=high probeMs=%.1f"), std::string::npos);
 }

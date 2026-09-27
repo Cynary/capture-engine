@@ -1,5 +1,27 @@
 # llm-wiki Log
 
+### 2026-09-27 - Recording-start latency: probe early stop, truthful live timing, WGC reserve-wait finding
+
+- `logs/20260927_195021` (0.1.6844, DXGI-dup desktop + Brave audio, first recording of the session): hotkey ->
+  media live 5453 ms, not the logged 6375 ms (`CheckChildProcessHealth` polls once per second). Split: spawn 0.05 s,
+  `[AVSyncProbe]` 3.17 s, engine/D3D/dup init 0.28 s, start + 19 audio sources 0.24 s, pre-live warmup 0.55 s,
+  encoder prewarm 0.16 s, `WGC startup delay-reserve wait` 1.00 s (budget exhausted, `partial_span_timeout`).
+- Probe: every shot captured the fixed 620 ms window (`capFrames=119040` at 192 kHz) with the marker at 95 ms.
+  Shots now stop at `DetectCompletedMarkerCenterFrame` (burst + 40 ms decayed guard); measured value unchanged,
+  full window kept as the bound. Shot spread 5.4 ms (engine-period Start jitter), so an adaptive 3-shot exit
+  was rejected. Expected probe ~0.8 s on this endpoint - **not hardware-verified**; check `stop=marker_complete`,
+  `shotMs=` ~150-250 and `probeMs=` in the next first-of-session recording, latency still ~33 ms.
+- Controller `Recording is live` now uses media's `recordingStartTime` stamp (`ResolveRecordingStartupTiming`).
+- **Open (not changed):** `SelectWgcStartupReserveCandidate` takes the frame NEAREST `latest - target` and
+  rejects it when younger than `target - tol` (tol = min(half output interval, 5 ms)). For a steady source the
+  phase `target mod period` is constant, so it fails on every evaluation: synthetic check with target 332.9 ms
+  never succeeds at 25/28/31/40 fps. Independently, `startupReserveBelowLowWater` needs
+  `ceil(delay / outputInterval)` = 40 newer frames, which a sub-output-rate source cannot supply within the
+  delay. Net: sub-CFR sources (desktop, 30 fps video) likely always wait the full 1 s smoothness-attempt budget.
+  In this log the timeout contract realized 320.6 ms vs 332.9 target and the extra ~0.6 s only discarded frames.
+  Caution: the 1 s budget is deliberate (`GetWgcStartupReserveWaitBudgetQpc`) and the 250/500 ms input-rate
+  windows feeding smoothness decisions fill during the wait - validate before shortening.
+
 ### 2026-09-27 - Session 20260927_040737 review: clean; two logging gaps closed
 
 - 0.1.6843, 10 recordings (r0001 inject Talos with FSR FG, r0002-r0010 WGC): all `healthy`, CFR coverage

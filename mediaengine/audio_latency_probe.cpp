@@ -51,6 +51,14 @@ bool g_LegacyDiskCacheCleanupAttempted = false;
 // makes the probe cost once per CE session instead of once per recording. Null = not attached.
 std::atomic<ce::av_sync::LatencyChannelBlock*> g_LatencyChannel{nullptr};
 
+uint64_t NowQpc100ns() {
+    LARGE_INTEGER freq = {};
+    LARGE_INTEGER now = {};
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return RawQpcToHundredNanoseconds(static_cast<uint64_t>(now.QuadPart), static_cast<uint64_t>(freq.QuadPart));
+}
+
 template <typename T>
 void SafeRelease(T*& p) {
     if (p) {
@@ -223,6 +231,7 @@ void AppendMonoFromFloat(const float* interleaved, UINT32 frames, int channels, 
 // Returns false (no value) on any error/inconclusive condition. Releases all interfaces it creates.
 bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const ProbeMarkerSpec& spec, int sampleRate,
                    int channels, double* outMs) {
+    const uint64_t shotStartQpc100ns = NowQpc100ns();
     IAudioClient* renderClient = nullptr;
     IAudioRenderClient* renderService = nullptr;
     IAudioClock* renderClock = nullptr;
@@ -365,6 +374,10 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
     const double captureSeconds = static_cast<double>(spec.totalFrames()) / sampleRate + 0.5;  // margin
     const DWORD deadlineTick = GetTickCount() + static_cast<DWORD>(captureSeconds * 1000.0) + 500;
     const DWORD pollSleepMs = 5;
+    // The full window stays the upper bound (it covers deep render paths); a shot normally ends as
+    // soon as its marker burst and a quiet guard are captured (DetectCompletedMarkerCenterFrame).
+    const size_t fullWindowFrames = static_cast<size_t>(markerTotalFrames) + static_cast<size_t>(sampleRate / 2);
+    const char* stopReason = "deadline";
 
     while (GetTickCount() < deadlineTick) {
         if (!haveRenderFrame0) {
@@ -383,6 +396,7 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
         UINT32 packetFrames = 0;
         HRESULT pr = captureService->GetNextPacketSize(&packetFrames);
         if (FAILED(pr)) {
+            stopReason = "capture_error";
             break;
         }
         if (packetFrames == 0) {
@@ -395,6 +409,7 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
         UINT64 devPos = 0, qpcPos = 0;
         pr = captureService->GetBuffer(&data, &framesAvail, &flags, &devPos, &qpcPos);
         if (FAILED(pr)) {
+            stopReason = "capture_error";
             break;
         }
         const size_t baseFrame = capturedMono.size();
@@ -408,13 +423,22 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
         }
         captureService->ReleaseBuffer(framesAvail);
 
-        if (haveRenderFrame0 &&
-            capturedMono.size() >= static_cast<size_t>(markerTotalFrames) + static_cast<size_t>(sampleRate / 2)) {
+        if (haveRenderFrame0 && DetectCompletedMarkerCenterFrame(capturedMono.data(), capturedMono.size(), spec) >= 0) {
+            stopReason = "marker_complete";
+            break;
+        }
+        if (haveRenderFrame0 && capturedMono.size() >= fullWindowFrames) {
+            stopReason = "full_window";
             break;
         }
     }
+    const double shotMs =
+        static_cast<double>(NowQpc100ns() - shotStartQpc100ns) / static_cast<double>(kHundredNanosecondsPerMillisecond);
 
     if (!haveRenderFrame0 || packetFrameQpc.empty() || capturedMono.size() < static_cast<size_t>(spec.leadInFrames)) {
+        DLL_Log(
+            "[AVSyncProbe] shot: rejected reason=no_loopback_data stop=%s capFrames=%zu renderFrame0=%d shotMs=%.1f",
+            stopReason, capturedMono.size(), haveRenderFrame0 ? 1 : 0, shotMs);
         shotCleanup();
         return false;
     }
@@ -422,6 +446,8 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
     const int centerFrame =
         DetectMarkerCenterFrame(capturedMono.data(), capturedMono.size(), sampleRate, spec.markerFreqHz);
     if (centerFrame < 0) {
+        DLL_Log("[AVSyncProbe] shot: rejected reason=marker_not_detected stop=%s capFrames=%zu shotMs=%.1f", stopReason,
+                capturedMono.size(), shotMs);
         shotCleanup();
         return false;
     }
@@ -462,10 +488,12 @@ bool MeasureOnceMs(IMMDevice* device, const WAVEFORMATEX* mixFormat, const Probe
 
     DLL_Log(
         "[AVSyncProbe] shot: centerFrame=%d (capFrames=%zu) loopbackCenterQpc=%llu startAnchor=%.3f ms "
-        "presentAnchor=%.3f ms renderStartQpc=%llu renderFrame0Qpc=%llu renderStreamLatency=%lldus",
+        "presentAnchor=%.3f ms renderStartQpc=%llu renderFrame0Qpc=%llu renderStreamLatency=%lldus stop=%s "
+        "shotMs=%.1f",
         centerFrame, capturedMono.size(), static_cast<unsigned long long>(loopbackCenterQpc100ns), latencyStartMs,
         latencyPresentMs, static_cast<unsigned long long>(renderStartQpc100ns),
-        static_cast<unsigned long long>(renderFrame0Qpc100ns), static_cast<long long>(renderStreamLatency100ns / 10));
+        static_cast<unsigned long long>(renderFrame0Qpc100ns), static_cast<long long>(renderStreamLatency100ns / 10),
+        stopReason, shotMs);
 
     if (!IsPlausibleLatencyMs(latencyStartMs)) {
         shotCleanup();
@@ -621,6 +649,7 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
         deviceKey.c_str(), spec.markerFreqHz, spec.amplitude, spec.leadInFrames, spec.markerFrames, spec.tailFrames,
         kProbeShots);
 
+    const uint64_t probeStartQpc100ns = NowQpc100ns();
     std::vector<double> shots;
     shots.reserve(kProbeShots);
     for (int i = 0; i < kProbeShots; ++i) {
@@ -631,6 +660,8 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
     }
 
     const MedianLatencyResult agg = MedianWithConsistency(shots, kProbeMinAgreeingShots, kProbeMaxSpreadMs);
+    const double probeMs = static_cast<double>(NowQpc100ns() - probeStartQpc100ns) /
+                           static_cast<double>(kHundredNanosecondsPerMillisecond);
     if (!agg.ok) {
         double minShot = 0.0;
         double maxShot = 0.0;
@@ -641,9 +672,9 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
         }
         DLL_Log(
             "[AVSyncProbe] fallback reason=no_consensus measuredShots=%zu/%d need=%d maxSpread=%.1fms "
-            "observedSpread=%.3fms confidence=low",
+            "observedSpread=%.3fms confidence=low probeMs=%.1f",
             shots.size(), kProbeShots, kProbeMinAgreeingShots, kProbeMaxSpreadMs,
-            shots.empty() ? 0.0 : maxShot - minShot);
+            shots.empty() ? 0.0 : maxShot - minShot, probeMs);
         cleanup();
         return result;
     }
@@ -655,9 +686,9 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
     StoreMemoryCache(deviceKey, agg.latencyMs);
     DLL_Log(
         "[AVSyncProbe] measured: agreeingShots=%d/%d key=%s latency=%.3f ms cache=%s entries=%zu "
-        "confidence=high",
+        "confidence=high probeMs=%.1f",
         agg.agreeingCount, kProbeShots, deviceKey.c_str(), agg.latencyMs,
-        sessionChannelAttached ? "memory+session" : "memory", MemoryCacheEntryCount());
+        sessionChannelAttached ? "memory+session" : "memory", MemoryCacheEntryCount(), probeMs);
 
     cleanup();
     return result;
