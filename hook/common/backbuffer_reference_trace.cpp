@@ -8,6 +8,8 @@
 #include <mutex>
 #include <string>
 
+#include "../wrappers/inline_hook.h"
+#include "dxgi_shared.h"
 #include "hook_common.h"
 
 namespace {
@@ -29,7 +31,8 @@ std::atomic<AddRefFn> g_OriginalAddRef{nullptr};
 std::atomic<ReleaseFn> g_OriginalRelease{nullptr};
 std::atomic<GetBufferFn> g_OriginalGetBuffer{nullptr};
 void** g_ResourceVtable = nullptr;
-void** g_SwapChainVtable = nullptr;
+// The GetBuffer body hook is installed at most once per process (never removed).
+bool g_GetBufferInstallAttempted = false;
 std::mutex g_InstallMutex;
 
 std::atomic<uint32_t> g_TrackedCount{0};
@@ -92,6 +95,10 @@ HRESULT STDMETHODCALLTYPE HookGetBuffer(IDXGISwapChain* self, UINT buffer, REFII
     return hr;
 }
 
+void PublishGetBufferTrampoline(void* trampoline, void*) {
+    g_OriginalGetBuffer.store(reinterpret_cast<GetBufferFn>(trampoline), std::memory_order_release);
+}
+
 template <typename Fn>
 bool PatchSlot(void** vtable, size_t slot, void* detour, std::atomic<Fn>& original) {
     void* current = *static_cast<void* volatile*>(&vtable[slot]);
@@ -135,12 +142,24 @@ void InstallHooks(void** resourceVtable, void** swapChainVtable) {
         HookLogImportant("BackBufferRefTrace: buffers use a second resource vtable %p (hooked %p) - not counted",
                          resourceVtable, g_ResourceVtable);
     }
-    if (!g_SwapChainVtable && swapChainVtable) {
-        const bool getBuffer =
-            PatchSlot(swapChainVtable, kGetBufferSlot, reinterpret_cast<void*>(&HookGetBuffer), g_OriginalGetBuffer);
-        g_SwapChainVtable = swapChainVtable;
-        HookLogImportant("BackBufferRefTrace: swapchain vtable %p GetBuffer hooked=%d", swapChainVtable,
-                         getBuffer ? 1 : 0);
+    if (!g_GetBufferInstallAttempted && swapChainVtable) {
+        g_GetBufferInstallAttempted = true;
+        // Never the swapchain's vtable slot: the Steam overlay hooks a swapchain by
+        // rewriting those slots and skips any that point into another module, and a
+        // swapchain whose slots Steam skipped is exactly the refused resize this trace
+        // exists to explain. DXGI's GetBuffer itself is hooked instead, and only
+        // while the slot still names it.
+        void* const getBufferTarget = *static_cast<void* volatile*>(&swapChainVtable[kGetBufferSlot]);
+        bool getBuffer = false;
+        if (DXGIShared::IsAddressInsideSystemDXGI(getBufferTarget)) {
+            void* trampoline = nullptr;
+            getBuffer = InlineHook::InstallPublished(getBufferTarget, reinterpret_cast<void*>(&HookGetBuffer),
+                                                     &trampoline, PublishGetBufferTrampoline, nullptr);
+        }
+        HookLogImportant(
+            "BackBufferRefTrace: DXGI GetBuffer %p (swapchain vtable %p, slot left untouched) hooked=%d%s",
+            getBufferTarget, swapChainVtable, getBuffer ? 1 : 0,
+            getBuffer ? "" : " - references handed out by GetBuffer are attributed to DXGI");
     }
 }
 
@@ -264,9 +283,8 @@ void BackBufferReferenceTrace_Uninstall() {
                 reinterpret_cast<void*>(g_OriginalAddRef.load()));
     RestoreSlot(g_ResourceVtable, kReleaseSlot, reinterpret_cast<void*>(&HookRelease),
                 reinterpret_cast<void*>(g_OriginalRelease.load()));
-    RestoreSlot(g_SwapChainVtable, kGetBufferSlot, reinterpret_cast<void*>(&HookGetBuffer),
-                reinterpret_cast<void*>(g_OriginalGetBuffer.load()));
-    // The originals stay published: a call already inside a hook still forwards.
+    // DXGI's GetBuffer body hook stays: the hook DLL is pinned and the detour
+    // only forwards once nothing is tracked. The originals stay published: a call
+    // already inside a hook still forwards.
     g_ResourceVtable = nullptr;
-    g_SwapChainVtable = nullptr;
 }

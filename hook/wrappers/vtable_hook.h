@@ -64,6 +64,22 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal);
  */
 Status Remove(void* pVTableEntry, void* pOriginal);
 
+/**
+ * Hand a CE-owned slot back to CE's recorded predecessor for the duration of a
+ * call that may let another module hook the slot (see
+ * vtable_hook_policy::ReclaimOutcome). Every HandBack that succeeds must be
+ * followed by TakeBack on the same thread. Refuses (ErrorPatchFailed) when a
+ * follower hooked above CE, and leaves the slot untouched.
+ */
+Status HandBack(void* pVTableEntry);
+
+/**
+ * Take a slot handed back by HandBack again, chaining CE above whatever the slot
+ * now holds. The new predecessor is published to *ppOriginal before the detour
+ * is reachable again, and returned in *ppPredecessorOut.
+ */
+Status TakeBack(void* pVTableEntry, void** ppOriginal, void** ppPredecessorOut);
+
 // Enable a hook (no-op - VTable hooks are always enabled)
 Status Enable(void* pTarget);
 

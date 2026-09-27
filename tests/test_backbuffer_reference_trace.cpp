@@ -100,9 +100,10 @@ TEST(BackBufferReferenceTraceTest, RecordsPerSiteAndReportsOverflow) {
     }
 }
 
-// End to end on fake COM objects: only the registered buffers are counted, a
-// GetBuffer's nested reference belongs to GetBuffer's caller, and uninstalling
-// restores every patched slot.
+// End to end on fake COM objects: only the registered buffers are counted, the
+// swapchain's vtable is never written (a slot-hooking overlay skips a slot that
+// points into another module - logs/20260927_023858), and uninstalling restores
+// every patched resource slot.
 TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables) {
     FakeSwapChain chain;
     FakeBuffer untracked;
@@ -115,7 +116,7 @@ TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables
 
     BackBufferReferenceTrace_Track(&chain, 3, "unit-test");
     EXPECT_NE(bufferVtable[1], originalAddRef);
-    EXPECT_NE(chainVtable[9], originalGetBuffer);
+    EXPECT_EQ(chainVtable[9], originalGetBuffer) << "the swapchain's GetBuffer slot must stay pristine";
     for (const FakeBuffer& buffer : chain.buffers) {
         EXPECT_EQ(buffer.refs, 1u) << "registering must leave the counts as it found them";
     }
@@ -134,6 +135,18 @@ TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables
     EXPECT_EQ(bufferVtable[1], originalAddRef);
     EXPECT_EQ(chainVtable[9], originalGetBuffer);
     leaked->Release();
+}
+
+// DXGI's GetBuffer is hooked in its body, and only while the slot still names DXGI's function.
+TEST(BackBufferReferenceTraceTest, GetBufferIsHookedInDxgisBodyNeverInTheSwapchainSlot) {
+    const std::string source = ReadSource("hook/common/backbuffer_reference_trace.cpp");
+    ASSERT_FALSE(source.empty());
+    EXPECT_EQ(source.find("PatchSlot(swapChainVtable"), std::string::npos);
+    const size_t owner = source.find("DXGIShared::IsAddressInsideSystemDXGI(getBufferTarget)");
+    const size_t install = source.find("InlineHook::InstallPublished(getBufferTarget");
+    ASSERT_NE(owner, std::string::npos);
+    ASSERT_NE(install, std::string::npos);
+    EXPECT_LT(owner, install);
 }
 
 // Armed after every successful D3D12 resize, read out on a refused one.

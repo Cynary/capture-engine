@@ -44,3 +44,29 @@ TEST(VTableHookPolicyTest, RepairReclaimsOnlyAConfirmedPredecessorRestoration) {
     EXPECT_FALSE(policy::ShouldReclaimRestoredSlot(foreign, detour, predecessor));
     EXPECT_TRUE(policy::ShouldPreserveForeignFollower(foreign, detour, predecessor));
 }
+
+// Talos Reawakened logs/20260927_023858: CE held the DXGI factory's CreateSwapChain
+// slots before the game's first factory, so the Steam overlay never hooked them and
+// never followed the swapchain's resizes. CE now hands the slots back while the game
+// creates a factory. Taking them again must chain CE above whatever hooked meanwhile,
+// and must never take a slot away from a follower that hooked above CE.
+TEST(VTableHookPolicyTest, FactorySlotHandbackChainsAboveAnOverlayThatHookedMeanwhile) {
+    int systemStorage = 0;
+    int detourStorage = 0;
+    int overlayStorage = 0;
+    const void* systemFunction = &systemStorage;
+    const void* detour = &detourStorage;
+    const void* overlayHook = &overlayStorage;
+
+    EXPECT_EQ(policy::ClassifyReclaim(systemFunction, detour, systemFunction),
+              policy::ReclaimOutcome::kPredecessorUnchanged);
+    EXPECT_EQ(policy::ClassifyReclaim(overlayHook, detour, systemFunction),
+              policy::ReclaimOutcome::kForeignHookInstalled);
+    EXPECT_EQ(policy::ClassifyReclaim(detour, detour, systemFunction), policy::ReclaimOutcome::kAlreadyOwned);
+
+    EXPECT_TRUE(policy::CanYieldSlot(detour, detour, systemFunction));
+    EXPECT_FALSE(policy::CanYieldSlot(overlayHook, detour, systemFunction))
+        << "a follower above CE keeps the slot";
+    EXPECT_FALSE(policy::CanYieldSlot(detour, detour, nullptr)) << "nothing to hand the slot back to";
+    EXPECT_FALSE(policy::CanYieldSlot(systemFunction, nullptr, systemFunction));
+}

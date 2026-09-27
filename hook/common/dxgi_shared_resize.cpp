@@ -4,9 +4,62 @@
 #include "resize_reference_holders.h"
 #include "resize_reference_probe.h"
 #include "swapchain_flag_policy.h"
+#include "vtable_slot_owner.h"
 
 namespace DXGIShared {
 namespace {
+
+void DescribeCodeOwner(const void* address, char* out, size_t outCount) {
+    char path[MAX_PATH] = {};
+    HMODULE module = nullptr;
+    if (address && TryGetModulePathFromCodeAddress(address, path, sizeof(path), &module) && module) {
+        const char* base = strrchr(path, '\\');
+        snprintf(out, outCount, "%s+0x%llX", base ? base + 1 : path,
+                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
+                                                 reinterpret_cast<uintptr_t>(module)));
+    } else {
+        snprintf(out, outCount, "%p", address);
+    }
+}
+
+// One line naming the owner of every swapchain slot an overlay hooks. A refused
+// resize with an overlay's references on the buffers (BackBufferRefTrace) means
+// that overlay's ResizeBuffers hook did not run; this says whether it was ever
+// in the slot, and where the slot's function jumps on entry.
+void LogSwapchainVTableSlotOwners(IDXGISwapChain* pSwapChain, const char* source, const char* when) {
+    void** const vtable = pSwapChain ? *reinterpret_cast<void***>(pSwapChain) : nullptr;
+    if (!vtable) {
+        return;
+    }
+    char line[1400] = {};
+    size_t used = 0;
+    for (const auto& slot : ce::vtable_slot_owner::kOverlayHookedSwapchainSlots) {
+        if (!IsReadableMemory(&vtable[slot.index], sizeof(void*))) {
+            break;
+        }
+        const void* function = vtable[slot.index];
+        char owner[MAX_PATH + 32] = {};
+        DescribeCodeOwner(function, owner, sizeof(owner));
+        char jump[MAX_PATH + 48] = {};
+        if (IsReadableMemory(function, ce::vtable_slot_owner::kEntryJumpBytes)) {
+            const void* indirect = ce::vtable_slot_owner::IndirectJumpSlot(function);
+            if (!indirect || IsReadableMemory(indirect, sizeof(void*))) {
+                if (const void* target = ce::vtable_slot_owner::EntryJumpTarget(function)) {
+                    char targetOwner[MAX_PATH + 32] = {};
+                    DescribeCodeOwner(target, targetOwner, sizeof(targetOwner));
+                    snprintf(jump, sizeof(jump), " entryJump->%s", targetOwner);
+                }
+            }
+        }
+        const int written = snprintf(line + used, sizeof(line) - used, "%s[%zu]%s=%s%s", used ? " " : "",
+                                     slot.index, slot.method, owner, jump);
+        if (written <= 0 || used + static_cast<size_t>(written) >= sizeof(line)) {
+            break;
+        }
+        used += static_cast<size_t>(written);
+    }
+    HookLogImportant("%s: swapchain vtable %p slot owners %s: %s", source, vtable, when, line);
+}
 
 // The application resize contract, in one place for ResizeBuffers and
 // ResizeBuffers1.
@@ -161,6 +214,11 @@ void EndD3D12ResizeDiagnostics(const D3D12ResizePreparation& preparation, IDXGIS
         static_cast<int>(NewFormat), SwapChainFlags, preparation.bufferCount, before, afterCaptureRelease, after,
         preparation.capture, preparation.captureReleased ? preparation.captureRelease : "captureRelease(unbound)",
         GetCurrentThreadId(), logIndex + 1);
+    // The first successes give the baseline a refused resize is compared against.
+    static std::atomic<uint32_t> s_slotOwnerBaselines{0};
+    if (FAILED(hr) || s_slotOwnerBaselines.fetch_add(1, std::memory_order_relaxed) < 2) {
+        LogSwapchainVTableSlotOwners(pSwapChain, source, FAILED(hr) ? "at the refused resize" : "after a resize");
+    }
 
     static std::atomic<bool> s_holdersScanned{false};
     if (ce::resize_reference_holders::ShouldScanFailedResize(hr, heldAfterFailure,

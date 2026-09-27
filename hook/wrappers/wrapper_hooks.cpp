@@ -382,7 +382,13 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
 
     t_inFactory = true;
     IDXGIFactory* pRealFactory = nullptr;
-    HRESULT hr = createFn(riid, (void**)&pRealFactory);
+    HRESULT hr = S_OK;
+    {
+        // The overlay hooks the factory's CreateSwapChain slots inside this call; CE's own
+        // claims would make it skip them (see DX12FactorySlotHandbackScope).
+        DX12FactorySlotHandbackScope factorySlotHandback("CreateDXGIFactory");
+        hr = createFn(riid, (void**)&pRealFactory);
+    }
     t_inFactory = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
@@ -445,7 +451,13 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
 
     t_inFactory1 = true;
     IDXGIFactory1* pRealFactory = nullptr;
-    HRESULT hr = createFn(riid, (void**)&pRealFactory);
+    HRESULT hr = S_OK;
+    {
+        // The overlay hooks the factory's CreateSwapChain slots inside this call; CE's own
+        // claims would make it skip them (see DX12FactorySlotHandbackScope).
+        DX12FactorySlotHandbackScope factorySlotHandback("CreateDXGIFactory1");
+        hr = createFn(riid, (void**)&pRealFactory);
+    }
     t_inFactory1 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {
@@ -505,7 +517,13 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
 
     t_inFactory2 = true;
     IDXGIFactory2* pRealFactory = nullptr;
-    HRESULT hr = createFn(Flags, riid, (void**)&pRealFactory);
+    HRESULT hr = S_OK;
+    {
+        // The overlay hooks the factory's CreateSwapChain slots inside this call; CE's own
+        // claims would make it skip them (see DX12FactorySlotHandbackScope).
+        DX12FactorySlotHandbackScope factorySlotHandback("CreateDXGIFactory2");
+        hr = createFn(Flags, riid, (void**)&pRealFactory);
+    }
     t_inFactory2 = false;
 
     if (SUCCEEDED(hr) && pRealFactory) {

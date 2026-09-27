@@ -49,10 +49,12 @@ HRESULT CreateTempSwapChainViaFactorySlot(IDXGIFactory2* factory, IUnknown* queu
         vtableMemory.State != MEM_COMMIT) {
         return E_FAIL;
     }
-    auto slot = reinterpret_cast<PFN_CreateSwapChainForHwnd>(vtable[15]);
-    if (reinterpret_cast<void*>(slot) == reinterpret_cast<void*>(DetourCreateSwapChainForHwndGlobal)) {
-        slot = dx12_hook_oCreateSwapChainForHwndGlobal;
-    }
+    // CE's own detour resolves to the system function, not to CE's predecessor: a factory-slot
+    // handback (dx12_hook_factory_slot_handback.cpp) can make the predecessor an overlay handler.
+    auto slot = reinterpret_cast<PFN_CreateSwapChainForHwnd>(const_cast<void*>(
+        ce::dx12_factory_slot::ResolveTempSwapChainFactorySlot(
+            vtable[15], reinterpret_cast<const void*>(DetourCreateSwapChainForHwndGlobal),
+            dx12_hook_s_realCreateSCForHwndAddr)));
     if (!slot) {
         return E_FAIL;
     }
@@ -140,15 +142,22 @@ dx12_hook_s_savedCreateSwapChainForHwndVtable = vtable;
 
 // Hook CreateSwapChain (vtable[10] for IDXGIFactory)
 // Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
-if (VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
-                       (LPVOID*)&dx12_hook_oCreateSwapChainGlobal) == VTableHook::Success) {
+const bool createSwapChainClaimed =
+    VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
+                       (LPVOID*)&dx12_hook_oCreateSwapChainGlobal) == VTableHook::Success;
+if (createSwapChainClaimed) {
     HookLog("DX12: Hooked global CreateSwapChain at vtable[10]");
 }
 
-if (VTableHook::Create(reinterpret_cast<void*>(&vtable[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal,
-                       (LPVOID*)&dx12_hook_oCreateSwapChainForHwndGlobal) == VTableHook::Success) {
+const bool createSwapChainForHwndClaimed =
+    VTableHook::Create(reinterpret_cast<void*>(&vtable[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal,
+                       (LPVOID*)&dx12_hook_oCreateSwapChainForHwndGlobal) == VTableHook::Success;
+if (createSwapChainForHwndClaimed) {
     HookLog("DX12: Hooked global CreateSwapChainForHwnd at vtable[15]");
 }
+// A slot-hooking overlay that has not hooked these slots yet refuses them from now on; the
+// application's CreateDXGIFactory* hands them back to it (dx12_hook_factory_slot_handback.cpp).
+DX12_NoteFactorySlotsClaimed(vtable, createSwapChainClaimed, createSwapChainForHwndClaimed);
 
 pFactory->Release();
 
@@ -523,7 +532,16 @@ if (!pSwapChain && guardedSystemRouteOnly) {
     const bool factoryMatchesSavedSlotVtable =
         ce::dx12_factory_slot::ShouldInvokeSavedCreateSwapChainForHwndSlot(
             static_cast<const void*>(dx12_hook_s_savedCreateSwapChainForHwndVtable), pFactory);
-    if (factoryMatchesSavedSlotVtable && dx12_hook_oCreateSwapChainForHwndGlobal) {
+    // After a factory-slot handback the saved predecessor can be an overlay's handler; this
+    // unguarded route must never enter one (Steam's NULL dispatch slots, see above).
+    const bool predecessorIsSystemDxgi = DXGIShared::IsAddressInsideSystemDXGI(
+        reinterpret_cast<const void*>(dx12_hook_oCreateSwapChainForHwndGlobal));
+    if (dx12_hook_oCreateSwapChainForHwndGlobal && !predecessorIsSystemDxgi) {
+        HookLogImportant(
+            "DX12: Skipping the raw CreateSwapChainForHwnd temp-swapchain call - CE's saved predecessor %p is a "
+            "foreign overlay handler below CE, not the system function",
+            reinterpret_cast<void*>(dx12_hook_oCreateSwapChainForHwndGlobal));
+    } else if (factoryMatchesSavedSlotVtable && dx12_hook_oCreateSwapChainForHwndGlobal) {
         // Call original directly - bypasses our wrapper
         hr = dx12_hook_oCreateSwapChainForHwndGlobal(pFactory, pQueue, hwnd, &scd, nullptr, nullptr, &pSwapChain);
         if (SUCCEEDED(hr) && pSwapChain) {

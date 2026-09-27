@@ -32,4 +32,37 @@ inline bool SavedOriginalIsForeignChain(const void* entryModule, const void* vta
            entryModule != selfModule;
 }
 
+// What a slot CE handed back to its predecessor (VTableHook::HandBack) holds when
+// CE takes it again (VTableHook::TakeBack).
+//
+// The handback exists for slot-hooking overlays that refuse a slot pointing
+// into another module: while CE's detour sits in the slot they never install
+// their own hook there. Talos Reawakened (logs/20260927_023858): CE claimed the
+// DXGI factory's CreateSwapChain slots before the game's first factory, the
+// Steam overlay therefore never saw the swapchain being created, never hooked
+// its ResizeBuffers, never released its back-buffer references, and every
+// resolution change was refused. Handing the slot back while the game's factory
+// is created lets such an overlay hook it; CE then chains above whatever the
+// slot holds.
+enum class ReclaimOutcome {
+    kPredecessorUnchanged,  // nobody hooked meanwhile: CE's predecessor stays what it was
+    kForeignHookInstalled,  // another module hooked the slot meanwhile: it becomes CE's predecessor
+    kAlreadyOwned,          // the slot already holds CE's detour: nothing to take back
+};
+
+inline ReclaimOutcome ClassifyReclaim(const void* current, const void* detour, const void* yieldedTo) {
+    if (current == detour) {
+        return ReclaimOutcome::kAlreadyOwned;
+    }
+    return current == yieldedTo ? ReclaimOutcome::kPredecessorUnchanged : ReclaimOutcome::kForeignHookInstalled;
+}
+
+// A slot can only be handed back from CE's own detour to CE's recorded
+// predecessor. Anything else in the slot means a follower hooked above CE; it
+// still reaches CE through its saved original, and taking the slot from it
+// would unhook it.
+inline bool CanYieldSlot(const void* current, const void* detour, const void* predecessor) {
+    return predecessor != nullptr && detour != nullptr && current == detour;
+}
+
 }  // namespace ce::vtable_hook_policy

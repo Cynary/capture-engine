@@ -19,6 +19,30 @@ using PresentCallback = uint32_t (*)(CallbackDescFrameGenerationPresent*, void*)
 // (fast-app coverage) and retried from DX12Hook::Init when dxgi.dll was not loaded yet.
 void InstallGlobalVTableHooks();
 
+// Hands CE's DXGI factory CreateSwapChain slots back to their predecessor while the application's
+// CreateDXGIFactory* is forwarded, so a slot-hooking overlay (Steam) can install its own factory
+// hooks, and takes them again above whatever they then hold. Only acts while
+// ce::dx12_factory_slot::ShouldHandBackFactorySlotsAroundFactoryCreate says so; see there.
+bool DX12_BeginFactorySlotHandback(const char* source);
+void DX12_EndFactorySlotHandback(const char* source);
+
+class DX12FactorySlotHandbackScope {
+public:
+    explicit DX12FactorySlotHandbackScope(const char* source)
+        : source_(source), active_(DX12_BeginFactorySlotHandback(source)) {}
+    ~DX12FactorySlotHandbackScope() {
+        if (active_) {
+            DX12_EndFactorySlotHandback(source_);
+        }
+    }
+    DX12FactorySlotHandbackScope(const DX12FactorySlotHandbackScope&) = delete;
+    DX12FactorySlotHandbackScope& operator=(const DX12FactorySlotHandbackScope&) = delete;
+
+private:
+    const char* source_;
+    bool active_;
+};
+
 // Internal D3D10/11 hook-discovery swapchains must pass through the shared DXGI factory
 // without entering DX12 tracking/wrapping. This scope is thread-local so a concurrent game
 // swapchain creation remains fully intercepted.
