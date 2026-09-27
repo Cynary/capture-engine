@@ -11,6 +11,7 @@
 #include "../wrappers/inline_hook.h"
 #include "dxgi_shared.h"
 #include "hook_common.h"
+#include "resize_reconcile_hook_policy.h"
 
 namespace {
 
@@ -144,20 +145,23 @@ void InstallHooks(void** resourceVtable, void** swapChainVtable) {
     }
     if (!g_GetBufferInstallAttempted && swapChainVtable) {
         g_GetBufferInstallAttempted = true;
-        // Never the swapchain's vtable slot: the Steam overlay hooks a swapchain by
-        // rewriting those slots and skips any that point into another module, and a
-        // swapchain whose slots Steam skipped is exactly the refused resize this trace
-        // exists to explain. DXGI's GetBuffer itself is hooked instead, and only
-        // while the slot still names it.
+        // Neither the swapchain's vtable slot nor the entry of DXGI's GetBuffer:
+        // the Steam overlay patches the entries of the functions a swapchain's
+        // vtable points to, and skips one that already jumps into another module
+        // (resize_reconcile_hook_policy.h). A swapchain Steam could not hook fully
+        // is exactly the refused resize this trace exists to explain, so GetBuffer
+        // is hooked below its entry, or not at all.
         void* const getBufferTarget = *static_cast<void* volatile*>(&swapChainVtable[kGetBufferSlot]);
         bool getBuffer = false;
         if (DXGIShared::IsAddressInsideSystemDXGI(getBufferTarget)) {
-            void* trampoline = nullptr;
-            getBuffer = InlineHook::InstallPublished(getBufferTarget, reinterpret_cast<void*>(&HookGetBuffer),
-                                                     &trampoline, PublishGetBufferTrampoline, nullptr);
+            getBuffer = InlineHook::InstallDeepHookPublished(getBufferTarget, reinterpret_cast<void*>(&HookGetBuffer),
+                                                             PublishGetBufferTrampoline, nullptr,
+                                                             ce::resize_reconcile_hook::kAssumedForeignEntryPatchSize) !=
+                        nullptr;
         }
         HookLogImportant(
-            "BackBufferRefTrace: DXGI GetBuffer %p (swapchain vtable %p, slot left untouched) hooked=%d%s",
+            "BackBufferRefTrace: DXGI GetBuffer %p (swapchain vtable %p; slot and entry left untouched) body "
+            "hooked=%d%s",
             getBufferTarget, swapChainVtable, getBuffer ? 1 : 0,
             getBuffer ? "" : " - references handed out by GetBuffer are attributed to DXGI");
     }

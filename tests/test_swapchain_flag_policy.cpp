@@ -228,29 +228,44 @@ TEST(SwapchainFlagPolicySourceTest, ResizePathsPreserveAnImplicitBufferCount) {
     EXPECT_NE(wrapper.find("if (BufferCount == 0)"), std::string::npos);
 }
 
-// The Steam overlay hooks a swapchain by rewriting its vtable slots and skips
-// every slot that already points into another module ("points to another
-// module, skipping hooks"). A CE detour in the ResizeBuffers slot therefore cost
-// Steam its resize handling: it kept one reference on each back buffer and every
-// resize of a chain it drew on failed with DXGI_ERROR_INVALID_CALL (Talos
-// Reawakened + FSR FG, logs/20260926_192858: gameoverlayrenderer64 acq=1 rel=0
-// per buffer; works without CE). The reconciliation patches dxgi's function
-// bodies and leaves slots 13 and 39 untouched.
-TEST(SwapchainFlagPolicySourceTest, ResizeReconciliationLeavesTheVTableSlotsToSlotHookingOverlays) {
+// The Steam overlay hooks a swapchain by patching the entry of each function its
+// vtable points to, and skips a function whose entry already jumps into another
+// module ("points to another module, skipping hooks"). It holds one reference on
+// each back buffer it draws on and returns them only in its ResizeBuffers hook, so
+// a CE detour in slot 13 (logs/20260926_192858) and a CE jump at ResizeBuffers'
+// entry (logs/20260927_031545: Present/Present1 jumped into Steam's relay page,
+// ResizeBuffers into capture_hook) both cost Steam its resize handling, and every
+// resize of a chain it drew on failed with DXGI_ERROR_INVALID_CALL. The
+// reconciliation hooks below the entry, like Present, and never takes the entry
+// while a third-party overlay is loaded.
+TEST(SwapchainFlagPolicySourceTest, ResizeReconciliationLeavesSlotsAndEntriesToSlotHookingOverlays) {
     const std::string hooks = ReadSource("hook/common/dxgi_shared_hooks.cpp");
     const size_t begin = hooks.find("bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain");
     ASSERT_NE(begin, std::string::npos);
     const std::string body = hooks.substr(begin, hooks.find("\n}\n", begin) - begin);
     EXPECT_EQ(body.find("ClaimSwapchainVTableSlot("), std::string::npos)
-        << "a CE detour in the slot hides ResizeBuffers from Steam's vtable hook";
+        << "a CE detour in the slot hides ResizeBuffers from Steam's hook";
     EXPECT_EQ(body.find("VirtualProtect("), std::string::npos) << "the slots are only read";
-    EXPECT_NE(body.find("InlineHook::InstallPublished(resizeTarget"), std::string::npos);
-    EXPECT_NE(body.find("InlineHook::InstallPublished(resize1Target"), std::string::npos);
+
+    const size_t deep = body.find("InlineHook::InstallDeepHookPublished(target, detour, publish, nullptr,");
+    const size_t fallback = body.find("ChooseSiteAfterBodyHookRefused(overlayLoaded)");
+    const size_t entry = body.find("fallback == Site::kEntry && InlineHook::InstallPublished(target");
+    ASSERT_NE(deep, std::string::npos);
+    ASSERT_NE(fallback, std::string::npos);
+    ASSERT_NE(entry, std::string::npos);
+    EXPECT_LT(deep, fallback) << "the body below the entry is always tried first";
+    EXPECT_LT(fallback, entry) << "the entry is only a fallback the policy allows";
+    EXPECT_EQ(body.find("InlineHook::InstallPublished(resizeTarget"), std::string::npos);
+    EXPECT_EQ(body.find("InlineHook::InstallPublished(resize1Target"), std::string::npos);
+
     // Only dxgi's own function is patched; a slot another component already
     // owns is left alone and reconciliation reports itself unavailable.
     const size_t guard = body.find("if (!inDxgi(resizeTarget))");
     ASSERT_NE(guard, std::string::npos);
-    EXPECT_LT(guard, body.find("InlineHook::InstallPublished(resizeTarget"));
+    EXPECT_LT(guard, deep);
+    // Both methods must hide the flag before CE may add it.
+    EXPECT_NE(body.find("(!hasResize1 || resize1Site != ce::resize_reconcile_hook::Site::kNone)"),
+              std::string::npos);
 }
 
 // A "call the original through the vtable" shortcut in a resize detour would

@@ -1,28 +1,24 @@
 # llm-wiki Log
 
-### 2026-09-27 - Talos resize fatal is CE's factory-slot claim hiding the swapchain from Steam
+### 2026-09-27 - Talos resize fatal: CE's hooks sat where Steam patches (slot, then function entry)
 
-- Session `logs/20260927_023858` (0.1.6840, **no FG**; user: also fails without FG, never with the Steam
-  overlay disabled): resize `FAILED ... before=[6,6,6,6,6,6]`, trace `gameoverlayrenderer64.dll=+6`
-  (`+0x76396 acq=1 rel=0` per buffer), all other modules balanced. The 0.1.6840 ResizeBuffers-body fix was
-  necessary but not sufficient.
-- Root cause: CE `VTableHook::Create`d factory slots 10/15 at 02:39:06.990 (original = pristine dxgi); the game's
-  first factory came at 07.119, and at 07.547 slot 15 still held CE's detour, i.e. Steam never chained in.
-  Without CE Steam logs `IWrapDXGIFactory::CreateSwapChain called -> Hooking vtable for swap chain -> Tracking
-  new swap chain` and `Releasing all resources for swapchain/device` on every resize: its resize release depends
-  on having seen the creation through its own factory slot hook. sl.dlss_g creates the chain via slot 10.
-- The user's "with CE" Steam log was CrashReportClient's (Steam's log is rewritten per process); it proves nothing.
-- Fix: `DX12FactorySlotHandbackScope` around `createFn` in `Wrapped_CreateDXGIFactory/1/2` (see the coexistence
-  page). Closed side paths: `CreateTempSwapChainViaFactorySlot` resolves CE's detour to
-  `dx12_hook_s_realCreateSCForHwndAddr`, the historical raw temp call refuses a foreign predecessor, D3D10/11
-  probes use `DX12_ResolveInternalProbeCreateSwapChain`. `BackBufferRefTrace` no longer writes swapchain slot 9.
-- New diagnostics: `DX12 factory slot handback #N`, `... taken back above <module+rva> (another module hooked it
-  ...)`, and `<source>: swapchain vtable ... slot owners` (Present/GetBuffer/ResizeBuffers/Present1/
-  ResizeBuffers1 owner + `entryJump->`) on every refused resize and the first two resizes.
-- Next repro: expect `taken back above gameoverlayrenderer64.dll+...` for both slots. If the handback logs
-  `unchanged` Steam's hook did not run inside CE's forwarded factory create (CE calls the on-disk export RVA;
-  Steam's CreateDXGIFactory1 patch is an entry patch, so it should). If resize still fails with slots owned by
-  Steam, check whether `[13]ResizeBuffers` shows Steam or `entryJump->capture_hook` (Steam following entry jumps).
+- `logs/20260927_031545` (0.1.6841, no FG): still `FAILED ... [6,6,6,6,6,6]`, `gameoverlayrenderer64.dll=+6`. The
+  0.1.6841 factory-slot handback ran twice (`CreateDXGIFactory`, `CreateDXGIFactory2`) and both times logged
+  `unchanged - nothing hooked it`: **Steam does not hook factory vtable slots**; hypothesis disproved and reverted.
+- Decisive: the new `slot owners` line. All five swapchain slots point into dxgi, but `[8]Present` and `[22]Present1`
+  start with `E9` into a private RWX page right after dxgi's image (Steam's relay page; `CreateSwapChainForHwnd`
+  already jumped into it at CE start), while `[13]ResizeBuffers` jumped to `capture_hook+0xDE860`. Steam hooks
+  by patching function ENTRIES and skips one already jumping into another module. Present was fine only because
+  CE hooks it below the entry (deep body). `logs/20260927_023858` (0.1.6840) is the same shape.
+- Fix: `InstallResizeReconciliationHooks` installs ResizeBuffers/ResizeBuffers1 as deep body hooks
+  (`kAssumedForeignEntryPatchSize=14`, like Present without a visible jump); with a third-party overlay loaded a
+  refused body hook takes no site (reconciliation unavailable, so no waitable flag), otherwise the entry prepend
+  stays the fallback (`resize_reconcile_hook_policy.h`). Both methods must be hooked before the flag may be added.
+  `BackBufferRefTrace` GetBuffer is a deep body hook too. The `slot owners` diagnostic stays.
+- The user's "with CE" Steam log was CrashReportClient's (Steam rewrites the file per process).
+- Next repro: expect `resize flag reconciliation ready (... site=body-below-entry ...)`, and at the first resize
+  `[13]ResizeBuffers=dxgi... entryJump->` into the same relay page as Present, then no refused resize. If the body
+  hook is refused, the line says why (`refused (<reason>)`).
 
 ### 2026-09-26 - Talos FSR FG resize fatal without recording; 50 s dump freeze; 0x4000 is UE's fatal assert
 
@@ -55,7 +51,7 @@
   its caller), tallies per return address for the registered buffers only; a refused resize logs
   `BackBufferRefTrace: bbN <module>+rva acq= rel=` and `net references by module`. Hook DLL is pinned, so the
   patched slots are never left dangling. Next repro: read those lines.
-- **Incomplete, see 2026-09-27:** the slot-13 claim was one of two; CE's factory slots 10/15 hid the chain from Steam.
+- **Incomplete, see 2026-09-27:** moving CE from slot 13 to the entry of ResizeBuffers still blocked Steam, which patches entries.
 - **ROOT CAUSE (logs/20260926_192858, 0.1.6839 trace):** `gameoverlayrenderer64.dll+0x76396 acq=1 rel=0` on each
   real back buffer; AMD FSR, D3D12Core and CE balanced. D3D12 swapchain buffers share ONE refcount across the chain
   (trace baselines `[5,4,3,2,1,0]`), so `[3,3,3]` = 3 refs total = Steam's one per buffer. Steam hooks swapchains

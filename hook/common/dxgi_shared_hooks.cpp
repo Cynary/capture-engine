@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "resize_reconcile_hook_policy.h"
 
 namespace DXGIShared {
 bool HasExternalEntryHook(const void* target) {
@@ -326,15 +327,13 @@ bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* so
         return true;
     }
 
-    // The slots themselves stay pristine: CE patches the dxgi functions they point
-    // at instead. The Steam overlay hooks a swapchain by rewriting these vtable
-    // slots and skips every slot that already points into another module - so a
-    // CE detour in slot 13 made Steam never see ResizeBuffers, never release the
-    // one reference it holds on each back buffer, and every resize of a chain
-    // Steam drew on failed with DXGI_ERROR_INVALID_CALL (Talos Reawakened + FSR
-    // FG, logs/20260926_192858: gameoverlayrenderer64 acq=1 rel=0 per buffer).
-    // With the patch in the function body, Steam's slot hook runs first and still
-    // reaches CE through the original function.
+    // Neither the vtable slots nor the entries of the functions they point to are
+    // CE's to take (see resize_reconcile_hook_policy.h): the Steam overlay patches
+    // those entries when the game creates its swapchain, skips one that already
+    // jumps into another module, and then never releases the reference it holds
+    // on each back buffer - every resize is refused (Talos Reawakened,
+    // logs/20260926_192858 with CE in slot 13, logs/20260927_031545 with CE at
+    // the entry). CE hooks below the entry, as it does for Present.
     void* const resizeTarget = *reinterpret_cast<void* volatile*>(&vtable[13]);
     void* const resize1Target = *reinterpret_cast<void* volatile*>(&vtable[39]);
     const HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
@@ -354,26 +353,62 @@ bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* so
         return false;
     }
 
-    void* trampoline = nullptr;
-    const bool resizeHooked =
-        InlineHook::InstallPublished(resizeTarget, reinterpret_cast<void*>(DetourResizeBuffersReconcileOnly),
-                                     &trampoline, PublishResizeReconcileTrampoline, nullptr);
+    const bool overlayLoaded = IsThirdPartyOverlayLoaded();
+    const auto hookSite = [&](void* target, void* detour, void (*publish)(void*, void*), bool alreadyHooked,
+                              std::atomic<bool>& bodyRefusedForGood, const char* method) {
+        using ce::resize_reconcile_hook::Site;
+        if (alreadyHooked) {
+            return Site::kBodyBelowEntry;  // an earlier call installed it; the trampoline is published
+        }
+        if (!bodyRefusedForGood.load(std::memory_order_acquire) &&
+            InlineHook::InstallDeepHookPublished(target, detour, publish, nullptr,
+                                                 ce::resize_reconcile_hook::kAssumedForeignEntryPatchSize)) {
+            return Site::kBodyBelowEntry;
+        }
+        const auto failure = InlineHook::GetLastDeepHookQuiesceFailure();
+        if (!ce::hook_patch::IsRetryableQuiesceFailure(failure)) {
+            bodyRefusedForGood.store(true, std::memory_order_release);
+        }
+        const Site fallback = ce::resize_reconcile_hook::ChooseSiteAfterBodyHookRefused(overlayLoaded);
+        void* trampoline = nullptr;
+        if (fallback == Site::kEntry && InlineHook::InstallPublished(target, detour, &trampoline, publish, nullptr)) {
+            return Site::kEntry;
+        }
+        HookLogImportant(
+            "DXGIShared::InstallResizeReconciliationHooks: %s body hook at %p refused (%s)%s", method, target,
+            ce::hook_patch::GetQuiesceFailureName(failure),
+            fallback == Site::kNone ? " - a third-party overlay is loaded, so CE leaves the entry to it and takes no "
+                                      "site"
+                                    : " and the entry prepend failed too");
+        return Site::kNone;
+    };
+
+    static std::atomic<bool> s_resizeBodyRefusedForGood{false};
+    static std::atomic<bool> s_resize1BodyRefusedForGood{false};
+    const auto resizeSite =
+        hookSite(resizeTarget, reinterpret_cast<void*>(DetourResizeBuffersReconcileOnly),
+                 PublishResizeReconcileTrampoline, dxgi_shared_oResizeBuffersReconcile != nullptr,
+                 s_resizeBodyRefusedForGood, "ResizeBuffers");
+    const bool hasResize1 = inDxgi(resize1Target);
+    const auto resize1Site =
+        hasResize1 ? hookSite(resize1Target, reinterpret_cast<void*>(DetourResizeBuffers1ReconcileOnly),
+                              PublishResize1ReconcileTrampoline, dxgi_shared_oResizeBuffers1Reconcile != nullptr,
+                              s_resize1BodyRefusedForGood, "ResizeBuffers1")
+                   : ce::resize_reconcile_hook::Site::kNone;
+    // Both methods hide the flag, or CE must not add it: an application resizing
+    // through the unhooked one would be refused with E_INVALIDARG.
+    const bool resizeHooked = resizeSite != ce::resize_reconcile_hook::Site::kNone &&
+                              (!hasResize1 || resize1Site != ce::resize_reconcile_hook::Site::kNone);
     if (resizeHooked) {
         dxgi_shared_s_resizeHookedVTable = vtable;
-        void* trampoline1 = nullptr;
-        if (inDxgi(resize1Target) &&
-            !InlineHook::InstallPublished(resize1Target, reinterpret_cast<void*>(DetourResizeBuffers1ReconcileOnly),
-                                          &trampoline1, PublishResize1ReconcileTrampoline, nullptr)) {
-            HookLogImportant("DXGIShared::InstallResizeReconciliationHooks: ResizeBuffers1 body hook at %p failed",
-                             resize1Target);
-        }
     }
     HookLogImportant(
-        "DXGIShared::InstallResizeReconciliationHooks: resize flag reconciliation %s via dxgi function-body hooks "
-        "(source=%s vtable=%p ResizeBuffers=%p ResizeBuffers1=%p; vtable slots left pristine for slot-hooking "
-        "overlays) — backbuffer_count may%s add the waitable object to application swapchains",
-        resizeHooked ? "ready" : "UNAVAILABLE", source ? source : "unknown", vtable, resizeTarget, resize1Target,
-        resizeHooked ? "" : " NOT");
+        "DXGIShared::InstallResizeReconciliationHooks: resize flag reconciliation %s (source=%s vtable=%p "
+        "ResizeBuffers=%p site=%s ResizeBuffers1=%p site=%s overlayLoaded=%d; vtable slots and function entries left "
+        "to slot-hooking overlays) — backbuffer_count may%s add the waitable object to application swapchains",
+        resizeHooked ? "ready" : "UNAVAILABLE", source ? source : "unknown", vtable, resizeTarget,
+        ce::resize_reconcile_hook::SiteName(resizeSite), resize1Target,
+        ce::resize_reconcile_hook::SiteName(resize1Site), overlayLoaded ? 1 : 0, resizeHooked ? "" : " NOT");
     return resizeHooked;
 }
 

@@ -391,23 +391,15 @@ TEST(DXGISharedSourceTest, PresentHooksTargetTheTerminalSystemDXGIPresentBelowAP
     EXPECT_NE(install.find("dx12_hook_oCreateSwapChainForHwndGlobal(pFactory", fallback), std::string::npos);
     EXPECT_NE(install.find("pTerminalFactory->Release();"), std::string::npos);
 
-    // The substitution belongs to the vtable CE hooked. Substituting for an arbitrary factory's
-    // slot would call a proxy's method with a real factory `this` — type confusion. Only CE's own
-    // detour is substituted, and by the system function captured from that vtable, never by CE's
-    // predecessor: a factory-slot handback can make that predecessor Steam's handler.
+    // The saved predecessor belongs to the vtable CE hooked. Substituting it for an arbitrary
+    // factory's slot would call a proxy's method with a real factory `this` — type confusion.
     const size_t slotHelper = install.find("HRESULT CreateTempSwapChainViaFactorySlot(");
     ASSERT_NE(slotHelper, std::string::npos);
     const size_t guardedSubstitution =
-        install.find("ce::dx12_factory_slot::ResolveTempSwapChainFactorySlot(", slotHelper);
+        install.find("reinterpret_cast<void*>(slot) == reinterpret_cast<void*>(DetourCreateSwapChainForHwndGlobal)",
+                     slotHelper);
     ASSERT_NE(guardedSubstitution, std::string::npos);
-    const size_t detourOnly =
-        install.find("reinterpret_cast<const void*>(DetourCreateSwapChainForHwndGlobal)", guardedSubstitution);
-    const size_t systemFunction = install.find("dx12_hook_s_realCreateSCForHwndAddr)));", guardedSubstitution);
-    const size_t call = install.find("return slot(factory, queue, hwnd, desc, nullptr, nullptr, out);", slotHelper);
-    ASSERT_NE(detourOnly, std::string::npos);
-    ASSERT_NE(systemFunction, std::string::npos);
-    EXPECT_LT(systemFunction, call);
-    EXPECT_EQ(install.find("slot = dx12_hook_oCreateSwapChainForHwndGlobal;", slotHelper), std::string::npos);
+    EXPECT_LT(guardedSubstitution, install.find("slot = dx12_hook_oCreateSwapChainForHwndGlobal;", slotHelper));
 
     // The system module is resolved by FULL PATH, never by base name: the proxy shares it.
     const fs::path hooksSource = fs::current_path() / "hook" / "common" / "dxgi_shared_hooks.cpp";

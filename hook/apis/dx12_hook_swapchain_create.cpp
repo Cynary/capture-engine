@@ -397,7 +397,7 @@ if (DXGIShared::ShouldBypassSwapchainCreateForVulkan("DetourCreateSwapChainGloba
 
 if (DX12_IsInternalDXGISwapchainProbe()) {
     HookLog("DetourCreateSwapChainGlobal: Internal D3D10/11 probe — passthrough without DX12 side-effects");
-    return DX12_ResolveInternalProbeCreateSwapChain()(pThis, pDevice, pDesc, ppSwapChain);
+    return dx12_hook_oCreateSwapChainGlobal(pThis, pDevice, pDesc, ppSwapChain);
 }
 
 HookLog("DetourCreateSwapChainGlobal: CALLED (factory=%p, device=%p, swapEffect=%d)", pThis, pDevice,

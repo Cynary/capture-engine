@@ -618,10 +618,6 @@ void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pS
 
 // Forward declarations
 void InstallGlobalVTableHooks();
-// Records which factory slots InstallGlobalVTableHooks claimed (dx12_hook_factory_slot_handback.cpp).
-void DX12_NoteFactorySlotsClaimed(void** vtable, bool createSwapChainClaimed, bool createSwapChainForHwndClaimed);
-// What CE's internal probe swapchains call instead of the (possibly foreign) CreateSwapChain predecessor.
-PFN_CreateSwapChain DX12_ResolveInternalProbeCreateSwapChain();
 
 bool TempSwapchainRefusedForLegacyPresentationProcess();
 void HookSwapchainVTableViaTempSwapchain(bool presentOnly = false, bool guardedSystemRouteOnly = false);

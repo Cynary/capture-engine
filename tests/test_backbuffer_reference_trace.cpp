@@ -101,8 +101,8 @@ TEST(BackBufferReferenceTraceTest, RecordsPerSiteAndReportsOverflow) {
 }
 
 // End to end on fake COM objects: only the registered buffers are counted, the
-// swapchain's vtable is never written (a slot-hooking overlay skips a slot that
-// points into another module - logs/20260927_023858), and uninstalling restores
+// swapchain's vtable is never written (a slot-hooking overlay skips a function
+// that jumps into another module - logs/20260927_031545), and uninstalling restores
 // every patched resource slot.
 TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables) {
     FakeSwapChain chain;
@@ -137,13 +137,15 @@ TEST(BackBufferReferenceTraceTest, CountsOnlyTrackedBuffersAndRestoresTheVtables
     leaked->Release();
 }
 
-// DXGI's GetBuffer is hooked in its body, and only while the slot still names DXGI's function.
-TEST(BackBufferReferenceTraceTest, GetBufferIsHookedInDxgisBodyNeverInTheSwapchainSlot) {
+// DXGI's GetBuffer is hooked below its entry, and only while the slot still names DXGI's
+// function: a slot-hooking overlay skips a function whose entry already jumps elsewhere.
+TEST(BackBufferReferenceTraceTest, GetBufferIsHookedBelowDxgisEntryNeverInTheSlotOrAtTheEntry) {
     const std::string source = ReadSource("hook/common/backbuffer_reference_trace.cpp");
     ASSERT_FALSE(source.empty());
     EXPECT_EQ(source.find("PatchSlot(swapChainVtable"), std::string::npos);
+    EXPECT_EQ(source.find("InlineHook::InstallPublished(getBufferTarget"), std::string::npos);
     const size_t owner = source.find("DXGIShared::IsAddressInsideSystemDXGI(getBufferTarget)");
-    const size_t install = source.find("InlineHook::InstallPublished(getBufferTarget");
+    const size_t install = source.find("InlineHook::InstallDeepHookPublished(getBufferTarget");
     ASSERT_NE(owner, std::string::npos);
     ASSERT_NE(install, std::string::npos);
     EXPECT_LT(owner, install);
