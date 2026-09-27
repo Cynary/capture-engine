@@ -9,9 +9,11 @@
 - Probe: every shot captured the fixed 620 ms window (`capFrames=119040` at 192 kHz) with the marker at 95 ms.
   Shots now stop at `DetectCompletedMarkerCenterFrame` (burst + 40 ms decayed guard); measured value unchanged,
   full window kept as the bound. Shot spread 5.4 ms (engine-period Start jitter), so an adaptive 3-shot exit
-  was rejected. Expected probe ~0.8 s on this endpoint - **not hardware-verified**; check `stop=marker_complete`,
-  `shotMs=` ~150-250 and `probeMs=` in the next first-of-session recording, latency still ~33 ms.
-- Controller `Recording is live` now uses media's `recordingStartTime` stamp (`ResolveRecordingStartupTiming`).
+  was rejected. Hardware-verified in `logs/20260927_201549` (0.1.6845, same endpoint, DXGI-dup desktop): 5/5
+  `stop=marker_complete`, `shotMs` 167-176, `probeMs=859.2`, latency 32.738 ms (was 32.896); hotkey -> live 2640 ms.
+- Controller `Recording is live` now uses media's `recordingStartTime` stamp (`ResolveRecordingStartupTiming`);
+  verified: `2640 ms ... observed after 2812 ms, liveStamp=media`. Recording healthy, CFR 4801/4801, post-mux
+  audio/video end delta 0 us.
 - **Open (not changed):** `SelectWgcStartupReserveCandidate` takes the frame NEAREST `latest - target` and
   rejects it when younger than `target - tol` (tol = min(half output interval, 5 ms)). For a steady source the
   phase `target mod period` is constant, so it fails on every evaluation: synthetic check with target 332.9 ms
@@ -20,7 +22,9 @@
   delay. Net: sub-CFR sources (desktop, 30 fps video) likely always wait the full 1 s smoothness-attempt budget.
   In this log the timeout contract realized 320.6 ms vs 332.9 target and the extra ~0.6 s only discarded frames.
   Caution: the 1 s budget is deliberate (`GetWgcStartupReserveWaitBudgetQpc`) and the 250/500 ms input-rate
-  windows feeding smoothness decisions fill during the wait - validate before shortening.
+  windows feeding smoothness decisions fill during the wait - validate before shortening. In `20260927_201549` the
+  source mostly ran above CFR (SourceFps 20.66..143.53) and the wait settled normally after ~0.27 s, consistent
+  with the full budget being paid only by sources that stay below the output rate.
 
 ### 2026-09-27 - Session 20260927_040737 review: clean; two logging gaps closed
 
