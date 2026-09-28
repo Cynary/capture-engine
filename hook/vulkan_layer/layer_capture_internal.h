@@ -49,7 +49,7 @@ enum class VulkanCaptureInteropMode {
 };
 
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace, VkExtent2D extent, uint32_t imageCount);
-bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain);
+ce::vulkan_capture_transport::HostRepublish RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain);
 
 void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain);
 
@@ -89,6 +89,11 @@ struct SharedTextureEntry {
     std::vector<HANDLE> ipcHandles;
     bool ipcHandlesAreNt = false;
     bool hasIpcRelay = false;
+
+    // Imported from media's encoder KMT textures (DXVK zero-copy adoption);
+    // only a transport while media's useEncoderTextures says so. See
+    // vulkan_capture_transport_policy.h.
+    bool encoderTextureImport = false;
 
     bool valid = false;
 };

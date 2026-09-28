@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "sharpen_policy.h"
+#include "vulkan_capture_transport_policy.h"
 #include "vulkan_final_output_capture.h"
 #include "vulkan_instance_registry.h"
 
@@ -561,7 +562,7 @@ PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
                        VkExtent2D extent,
                        uint32_t imageCount);
-bool RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain);
+ce::vulkan_capture_transport::HostRepublish RepublishCaptureTransportForHost(VkDevice device, VkSwapchainKHR swapchain);
 void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain);
 void CleanupCapture(VkDevice device);
 bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,

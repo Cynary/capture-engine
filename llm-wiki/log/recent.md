@@ -25,9 +25,17 @@
   before the recording. After adoption the entry has no IPC relay, so frames are signaled on the exported timeline
   fence (`state.sharedFenceHandle`, `encoderFenceValue == vulkanSignalValue`). Fix: `ce::AdoptEncoderTexturesWithFence`
   publishes that fence before the flag. Test `LateEncoderTextureAdoptionPublishesTheProducerFence`.
-- **Open:** `RepublishCaptureTransportForHost` after a late adoption publishes the adopted entry's
-  `textureHandles` (all null for encoder-KMT imports) and prefers `ipcFenceHandle`, which is no longer signaled.
-  A replacement media host after adoption therefore likely gets no usable transport. Unverified.
+- Follow-up 2 (static analysis + MinGW syntax check, no hardware run): `RepublishCaptureTransportForHost` after an
+  adoption published the import entry's `textureHandles` (all null) and `ipcFenceHandle` (unsignaled since
+  adoption). Returning false did not help: `InitializeCapture` returns early for an unchanged initialized state,
+  and `GetOrCreateSharedTextures` returned the same import. A contended try-lock also fell through to that early
+  return while the present path recorded the host generation as served. Fix:
+  `hook/vulkan_layer/vulkan_capture_transport_policy.h` decides Published/Rebuild/Retry. A rebuild invalidates
+  the import and the current state, so `InitializeCapture` retires it and builds a layer-owned transport (deferred
+  rebuilds are retried by the existing `captureStateMissing` path). Retry leaves the generation unrecorded.
+  `GetOrCreateSharedTextures` retires any valid import it meets, which also fixes a same-size swapchain rebuild
+  between recordings. `SharedTextureEntry::encoderTextureImport` marks imports. Tests:
+  `tests/test_vulkan_capture_transport_policy.cpp`.
 
 ### 2026-09-27 - Recording-start latency: probe early stop, truthful live timing, WGC reserve-wait finding
 

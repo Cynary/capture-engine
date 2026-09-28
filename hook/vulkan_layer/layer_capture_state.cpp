@@ -227,6 +227,7 @@ bool ImportEncoderKmtTextures(VkDevice device,  DeviceDispatch* disp,  uint64_t 
     newEntry.textureHandles.assign(ENCODER_TEXTURE_SLOT_COUNT, nullptr);
     newEntry.textureHandlesAreNt = false;
     newEntry.hasIpcRelay = false;
+    newEntry.encoderTextureImport = true;
 
     auto cleanupImportedEntry = [&]() {
         for (auto& img : newEntry.vkImages) {

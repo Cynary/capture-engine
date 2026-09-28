@@ -554,8 +554,19 @@ SharedTextureEntry* GetOrCreateSharedTextures(VkDevice vkDev,  DeviceDispatch* d
     for (auto it = layer_capture_g_TextureCache.begin(); it != layer_capture_g_TextureCache.end();) {
         if (it->vkDevice == vkDev && it->luidKey == luidKey && it->width == width && it->height == height &&
             it->vkFormat == vkFormat) {
-            if (it->valid)
+            if (ce::vulkan_capture_transport::CanServeUnadoptedTransport(it->valid, it->encoderTextureImport))
                 return &(*it);
+            if (it->valid && it->encoderTextureImport) {
+                // Media's textures from an earlier adoption: they carry no
+                // handle media could open without adopting them again.
+                it->valid = false;
+                static std::atomic<uint64_t> s_staleImportRetireCount{0};
+                const uint64_t retired = s_staleImportRetireCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (retired <= 16 || (retired % 100) == 0) {
+                    LayerLog("Vulkan Layer: Retired stale encoder-texture import %ux%u (not adopted now; retired=%llu)",
+                             width, height, static_cast<unsigned long long>(retired));
+                }
+            }
             // Invalid entries may still be referenced by an in-flight capture
             // submission. Keep them retired until device teardown instead of
             // releasing Vulkan/D3D resources on the Present thread.

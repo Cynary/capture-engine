@@ -64,10 +64,17 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         const uint64_t hostGeneration = g_LayerHostGeneration.load(std::memory_order_acquire);
         const uint64_t captureGeneration = sd->captureHostGeneration.load(std::memory_order_acquire);
         if (hostGeneration != 0 && captureGeneration != hostGeneration) {
-            if (!RepublishCaptureTransportForHost(sd->device, sd->swapchain)) {
+            using ce::vulkan_capture_transport::HostRepublish;
+            const HostRepublish republish = RepublishCaptureTransportForHost(sd->device, sd->swapchain);
+            if (republish == HostRepublish::Rebuild) {
+                // A deferred rebuild is retried by the capture path, which
+                // re-initializes whenever it finds no initialized state.
                 InitializeCapture(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent, sd->imageCount);
             }
-            sd->captureHostGeneration.store(hostGeneration, std::memory_order_release);
+            // A contended republish is retried on the next present; recording the
+            // generation now would leave the new host without a transport.
+            if (republish != HostRepublish::Retry)
+                sd->captureHostGeneration.store(hostGeneration, std::memory_order_release);
         }
     }
 
