@@ -17,6 +17,24 @@ inline bool ShouldStartOverlayDisplayTiming(bool showOverlay, bool showSystemLat
     return showOverlay && showSystemLatency;
 }
 
+// The longest a present submission may wait for the flip that shows it. A
+// flip queue holds a few frames, so even a frame that sat behind three others
+// at 3 fps reaches the screen inside this bound; below that rate the overlay
+// reads presentation timing anyway. The bound is what keeps a submission that
+// never completes as a flip - a composed or copied present, which the driver
+// can switch to mid-session (NVIDIA's Vulkan WSI moving to a DXGI swapchain on
+// a resolution change) - from being claimed seconds later by an unrelated
+// completion whose submit sequence happens to carry the same number.
+inline constexpr int64_t kMaxSubmitToCompletionUs = 1'000'000;
+
+// A completion belongs to a submission only if it follows it and follows it by
+// no more than maxAge (in the timestamps' own units; <= 0 disables the bound).
+inline bool IsPlausibleSubmitCompletion(int64_t submitTimestamp, int64_t completionTimestamp, int64_t maxAge) {
+    if (completionTimestamp < submitTimestamp)
+        return false;
+    return maxAge <= 0 || completionTimestamp - submitTimestamp <= maxAge;
+}
+
 // No outstanding runtime present of that process is waiting for a submission.
 inline constexpr std::size_t kNoPendingDisplayPresent = static_cast<std::size_t>(-1);
 

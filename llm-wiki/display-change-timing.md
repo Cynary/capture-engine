@@ -4,6 +4,8 @@ Last verified: 2026-09-25 (refresh-bounded graph time from the dx12_fg_switch_te
 `20260925_183820`; earlier: event timestamps, exact FSR pacing windows, the controlled
 `20260909_063715` launch-order pair, and the healthy but different-scene `20260909_170855` run;
 repeated same-scene validation of the final startup-isolation build remains pending)
+Last cross-checked: 2026-09-28 (completion bound against stale unflipped submissions; static analysis of DOOM
+Eternal session `20260928_042343`, not yet re-run on hardware)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -119,6 +121,35 @@ stream is unavailable, denied, failed, or two seconds stale.
   `runtimeInterval(n,meanUs,stddevUs,jaggednessUs)`. Jaggedness is the mean absolute difference between
   neighbouring intervals. Interpret it together with provider provenance and independent evidence;
   choosing whichever series is flatter would be circular validation.
+
+### Completion bound and composed presentation (2026-09-28)
+
+- **A submission only matches a completion that follows it within `kMaxSubmitToCompletionUs` (1 s)**
+  (`IsPlausibleSubmitCompletion` in `display_timing_policy.h`, `DisplaySubmissionTracker::FindForCompletion`).
+  Every completion path (VSync DPC, H/VSync MPO, immediate and immediate-MPO flips, MPO present-ids) goes through
+  it. Entries older than the bound are dropped at lookup (`staleRejected=`); entries newer than the completion stay
+  for their own flip. Submissions expire at bound + the 24 ms reorder window on a 250 ms prune (`expired=`), no
+  longer with the 10 s payload maps.
+- **Why:** DOOM Eternal session `20260928_042343` (0.1.6847, native Vulkan, 4K -> 1440p mode). NVIDIA's WSI
+  switched to a composed DXGI path, so the game's present packets kept arriving (~140/s) but none completed as a
+  flip of its own. Under the old 10-15 s retention, unrelated `VSyncDPC` completions whose `FlipFenceId >> 32`
+  carried the same 32-bit number claimed those stale entries: `presentToDisplay(n=89 minUs=8834929 meanUs=10507188)`,
+  `publishedInterval p50=27.8-34.7 ms`, `latchInterval n=0`, and the overlay drew ~29 fps (`outputRatio=205permille`)
+  with the graph toggling between display and presentation timing whenever a sporadic sample refreshed the stream.
+  The exact numbering overlap is not established (separate per-engine counters are the likely cause: the game
+  presents from a compute queue). The bound does not depend on it.
+- **Why 1 s:** a flip queue holds a few frames, so present-to-display exceeds 1 s only below ~3 fps with a full
+  queue, where presentation timing is the better source anyway. A dropped late sample never invents a short frame:
+  the next published interval spans the gap.
+- **Composed presentation is currently unmeasured, by design:** with nothing published, the consumer's 2 s staleness
+  rule falls back to presentation timing. `DisplaySubmissionExpiryMonitor` reports the state as
+  `Present submissions of PID N now expire without a flip completion` / `Flip completions resumed`. The state starts
+  only when a prune sees expiry *and no completion*, because flip-model presents replaced before their blank also
+  expire during normal play. It changes at most once per 10 s. The stalled health warning names it
+  (`presents expire without a flip`). Open question: measuring composed frames through DWM's own flips (the way
+  PresentMon completes `Composed_*` presents) would need DWM token events CE does not collect.
+- Coverage: `tests/test_display_timing_submissions.cpp` (bound, stale skip, reuse by a fresh submission, causal
+  order, prune accounting, monitor transitions and rate limit).
 
 ## Event timestamps, not an inferred refresh grid
 

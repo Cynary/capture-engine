@@ -57,6 +57,7 @@ public:
         LARGE_INTEGER frequency = {};
         QueryPerformanceFrequency(&frequency);
         qpcFrequency_ = frequency.QuadPart;
+        submissions_.SetMaxCompletionAge(kMaxSubmitToCompletionUs * qpcFrequency_ / 1'000'000);
         nvidiaAnnouncements_.SetQpcFrequency(qpcFrequency_);
         outputs_.SetQpcFrequency(qpcFrequency_);
         RefreshDisplayPeriods();
@@ -328,7 +329,8 @@ private:
             if (!ReadProperty(event, L"FlipSubmitSequence", encodedSequence, i) || encodedSequence == 0)
                 continue;
             const uint32_t submitSequence = static_cast<uint32_t>(encodedSequence >> 32u);
-            const SubmitAssociation* association = submissions_.Find(submitSequence);
+            const SubmitAssociation* association =
+                submissions_.FindForCompletion(submitSequence, event->EventHeader.TimeStamp.QuadPart);
             if (!association)
                 continue;
             const uint32_t processId = association->processId;
@@ -357,7 +359,8 @@ private:
             !ReadProperty(event, L"FlipSubmitSequence", submitSequence) || planeCount == 0 || planeCount > 64) {
             return;
         }
-        const SubmitAssociation* association = submissions_.Find(submitSequence);
+        const SubmitAssociation* association =
+            submissions_.FindForCompletion(submitSequence, event->EventHeader.TimeStamp.QuadPart);
         if (!association)
             return;
         for (uint32_t i = 0; i < planeCount; ++i) {
@@ -455,7 +458,7 @@ private:
 
     void PublishForSubmit(uint32_t submitSequence, int64_t timestamp, DisplayCompletionKind completionKind,
                           bool erase, DisplayCompletionSource source, uint32_t displaySource = 0) {
-        const SubmitAssociation* association = submissions_.Find(submitSequence);
+        const SubmitAssociation* association = submissions_.FindForCompletion(submitSequence, timestamp);
         if (!association)
             return;
         QueueTimestamp(association->processId, association->associationId, timestamp, completionKind,
@@ -516,6 +519,8 @@ private:
             PruneAssociations(nowQpc - qpcFrequency_ * 10);
             lastPruneQpc_ = nowQpc;
         }
+        if (nowQpc - lastSubmissionPruneQpc_ >= qpcFrequency_ / 4)
+            PruneSubmissions(nowQpc);
         if (pendingTimestamps_.empty())
             return;
         SortPending();
@@ -557,8 +562,20 @@ private:
         pendingTimestamps_.clear();
     }
 
+    // Submissions expire at the completion bound (plus the reorder window a
+    // late-delivered completion may still need), not with the 10 s payload
+    // maps: an entry that outlives its bound can only be claimed wrongly.
+    void PruneSubmissions(int64_t nowQpc) {
+        const int64_t boundQpc =
+            (kMaxSubmitToCompletionUs + kTimestampReorderWindowUs) * qpcFrequency_ / 1'000'000;
+        const uint64_t expired = submissions_.PruneBefore(nowQpc - boundQpc);
+        lastSubmissionPruneQpc_ = nowQpc;
+        LogSubmissionExpiryTransition(
+            expiryMonitor_.Observe(expired, submissions_.matchedCompletions(), GetTickCount64()),
+            submissions_.lastExpiredProcessId(), expired, expiryMonitor_.lastCompleted());
+    }
+
     void PruneAssociations(int64_t cutoff) {
-        submissions_.PruneBefore(cutoff);
         correlation_.Prune(cutoff);
         nvidiaFlips_.PruneBefore(cutoff);
     }
@@ -609,6 +626,9 @@ private:
             return false;
         health.presents = submissions_.observedPresents();
         health.associations = submissions_.observedAssociations();
+        health.expiredAssociations = submissions_.expiredAssociations();
+        health.staleCompletions = submissions_.rejectedStaleCompletions();
+        health.submissionsExpiring = expiryMonitor_.expiring();
         health.queued = queuedTimestamps_;
         health.published = outputs_.published();
         health.suppressed = suppressedTimestamps_;
@@ -714,6 +734,8 @@ private:
     wchar_t sessionName_[kTraceSessionNameCapacity] = {};
     int64_t qpcFrequency_ = 0;
     int64_t lastPruneQpc_ = 0;
+    int64_t lastSubmissionPruneQpc_ = 0;
+    DisplaySubmissionExpiryMonitor expiryMonitor_;
     std::thread processThread_;
     std::thread flushThread_;
 

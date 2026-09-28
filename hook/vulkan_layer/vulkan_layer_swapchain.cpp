@@ -1,5 +1,15 @@
 #include "vulkan_layer_internal.h"
 #include "vulkan_present_boundary.h"
+#include "vulkan_swapchain_result_policy.h"
+
+#include "../../common/log_meter.h"
+
+namespace swapchain_result = ce::vulkan_swapchain_result_policy;
+static_assert(swapchain_result::kSuboptimal == VK_SUBOPTIMAL_KHR);
+static_assert(swapchain_result::kOutOfDate == VK_ERROR_OUT_OF_DATE_KHR);
+static_assert(swapchain_result::kSurfaceLost == VK_ERROR_SURFACE_LOST_KHR);
+static_assert(swapchain_result::kFullScreenExclusiveModeLost == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT);
+static_assert(swapchain_result::kDeviceLost == VK_ERROR_DEVICE_LOST);
 
 namespace {
 
@@ -406,6 +416,8 @@ SwapchainData* BeginAcquireBoundary(VkSwapchainKHR swapchain) {
 // that the image the runtime is presenting is not the one it already
 // composited into.
 void EndAcquireBoundary(SwapchainData* sd, VkResult acquireResult, const uint32_t* pImageIndex) {
+    if (acquireResult != VK_SUCCESS && sd)
+        LogSwapchainInvalidationResult("vkAcquireNextImageKHR", acquireResult, sd->swapchain);
     if ((acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR) && sd && pImageIndex &&
         sd->imageAcquireGeneration && *pImageIndex < sd->imageCount) {
         sd->imageAcquireGeneration[*pImageIndex].fetch_add(1, std::memory_order_acq_rel);
@@ -413,6 +425,22 @@ void EndAcquireBoundary(SwapchainData* sd, VkResult acquireResult, const uint32_
 }
 
 }  // namespace
+
+void LogSwapchainInvalidationResult(const char* call, VkResult result, VkSwapchainKHR swapchain) {
+    const char* name = swapchain_result::InvalidationResultName(static_cast<int32_t>(result));
+    if (!name)
+        return;
+    static std::atomic<uint32_t> occurrences{0};
+    const uint32_t occurrence = occurrences.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (!ce::log_meter::ShouldLogCadence(occurrence, 32, 1024))
+        return;
+    const SwapchainData* sd = swapchain ? VulkanLayerState::Get().GetSwapchainData(swapchain) : nullptr;
+    // The handle goes last: it is a 64-bit integer on 32-bit builds.
+    LayerLog("Vulkan Layer: %s returned %s (%d) - the application is told to recreate the swapchain "
+             "(%ux%u, occurrence #%u) %p",
+             call, name, static_cast<int>(result), sd ? sd->extent.width : 0u, sd ? sd->extent.height : 0u,
+             occurrence, swapchain);
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                              uint64_t timeout, VkSemaphore semaphore, VkFence fence,

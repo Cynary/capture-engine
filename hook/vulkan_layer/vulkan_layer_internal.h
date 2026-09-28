@@ -86,6 +86,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
 void LearnPrerenderProducerTopology(SwapchainData* swapchainData, VkQueue presentQueue,
                                     const VkPresentInfoKHR* presentInfo);
 
+// vulkan_layer_swapchain.cpp - names a present/acquire result that makes the
+// application recreate its swapchain. Metered, and the result is never changed.
+void LogSwapchainInvalidationResult(const char* call, VkResult result, VkSwapchainKHR swapchain);
+
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout, VkSemaphore semaphore, VkFence fence, uint32_t* pImageIndex);
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImage2KHR(VkDevice device, const VkAcquireNextImageInfoKHR* pAcquireInfo, uint32_t* pImageIndex);

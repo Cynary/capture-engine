@@ -536,6 +536,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
     const int64_t presentCallEndUs = PerfLogger::GetQpcUs();
     perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
+    if (res != VK_SUCCESS && pPresentInfo && pPresentInfo->swapchainCount != 0 && pPresentInfo->pSwapchains)
+        LogSwapchainInvalidationResult("vkQueuePresentKHR", res, pPresentInfo->pSwapchains[0]);
     if (!asyncPresentDetected) {
         if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) {
             g_SharedFpsLimiter.ApplyPostPresent();

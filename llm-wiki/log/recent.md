@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-09-28 - Composed Vulkan present: overlay display timing matched 10 s-old frames
+
+- `logs/20260928_042343` (0.1.6847, DOOM Eternal native Vulkan, 4K -> 1440p): the game recreated its swapchain 18x
+  in 11 s (alternating 2560x1440 / 3840x2160, black window, ended at an alt-tab). CE passes present/acquire results
+  through unchanged and touches no FSE call, so nothing tied that to CE, but no result was logged. Now
+  `LogSwapchainInvalidationResult` (`vulkan_swapchain_result_policy.h`) names OUT_OF_DATE/SUBOPTIMAL/SURFACE_LOST/
+  FSE_LOST/DEVICE_LOST per call. Open: re-run to see which result drives the flapping.
+- After the switch the sensor showed `presentToDisplay` 5.9-10.5 s mean, `latchInterval n=0`, published ~29 fps
+  while the game ran at 140. The cause was stale unflipped submissions claimed by unrelated VSync completions.
+  Fix: 1 s completion bound and short submission retention, see `display-change-timing.md` "Completion bound and composed presentation".
+  Only verified by Linux-built unit tests (no MinGW or Windows run in this session).
+
 ### 2026-09-28 - Vulkan resize mid-recording froze video: fence published to the wrong slot
 
 - `logs/20260928_001303` (0.1.6845, DOOM Eternal native Vulkan with NVIDIA present-on-DXGI, inject capture):

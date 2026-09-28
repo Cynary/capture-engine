@@ -68,11 +68,45 @@ public:
         return true;
     }
 
+    // Bounds how long a submission may wait for its completion; see
+    // kMaxSubmitToCompletionUs. Zero leaves it unbounded.
+    void SetMaxCompletionAge(int64_t maxAge) noexcept {
+        maxCompletionAge_ = maxAge;
+    }
+
     const SubmitAssociation* Find(uint32_t submitSequence) const {
         const auto association = associations_.find(submitSequence);
         if (association != associations_.end() && !association->second.empty())
             return &association->second.front();
         return nullptr;
+    }
+
+    // The association a completion at completionTimestamp can actually
+    // belong to. A submit sequence is only a 32-bit number and different
+    // engines count independently, so an entry the completion could not have
+    // come from - older than the completion bound - is a stale present that
+    // never flipped, and it is dropped here rather than reported as a frame
+    // that took seconds to reach the screen. An entry newer than the
+    // completion is a later submission reusing the number; it stays for its
+    // own completion.
+    const SubmitAssociation* FindForCompletion(uint32_t submitSequence, int64_t completionTimestamp) {
+        const auto found = associations_.find(submitSequence);
+        if (found == associations_.end())
+            return nullptr;
+        auto& queue = found->second;
+        while (!queue.empty() && completionTimestamp >= queue.front().timestamp &&
+               !IsPlausibleSubmitCompletion(queue.front().timestamp, completionTimestamp, maxCompletionAge_)) {
+            queue.pop_front();
+            ++rejectedStaleCompletions_;
+        }
+        if (queue.empty()) {
+            associations_.erase(found);
+            return nullptr;
+        }
+        if (!IsPlausibleSubmitCompletion(queue.front().timestamp, completionTimestamp, maxCompletionAge_))
+            return nullptr;
+        ++matchedCompletions_;
+        return &queue.front();
     }
 
     void Erase(uint32_t submitSequence) {
@@ -84,19 +118,28 @@ public:
             associations_.erase(association);
     }
 
-    void PruneBefore(int64_t cutoff) {
+    // Returns how many submissions expired without ever being completed: a
+    // flip-model present replaced before its blank, or one that never flips at
+    // all because the frame is composed or copied to the screen.
+    std::size_t PruneBefore(int64_t cutoff) {
         for (auto it = pendingPresents_.begin(); it != pendingPresents_.end();) {
             auto& presents = it->second;
             while (!presents.empty() && presents.front().timestamp < cutoff)
                 presents.pop_front();
             it = presents.empty() ? pendingPresents_.erase(it) : std::next(it);
         }
+        std::size_t expired = 0;
         for (auto it = associations_.begin(); it != associations_.end();) {
             auto& associations = it->second;
-            while (!associations.empty() && associations.front().timestamp < cutoff)
+            while (!associations.empty() && associations.front().timestamp < cutoff) {
+                lastExpiredProcessId_ = associations.front().processId;
                 associations.pop_front();
+                ++expired;
+            }
             it = associations.empty() ? associations_.erase(it) : std::next(it);
         }
+        expiredAssociations_ += expired;
+        return expired;
     }
 
     void Clear() {
@@ -107,12 +150,71 @@ public:
     uint64_t observedPresents() const noexcept { return observedPresents_; }
     uint64_t observedAssociations() const noexcept { return observedAssociations_; }
     uint64_t observedFallbackAssociations() const noexcept { return observedFallbackAssociations_; }
+    uint64_t matchedCompletions() const noexcept { return matchedCompletions_; }
+    uint64_t rejectedStaleCompletions() const noexcept { return rejectedStaleCompletions_; }
+    uint64_t expiredAssociations() const noexcept { return expiredAssociations_; }
+    uint32_t lastExpiredProcessId() const noexcept { return lastExpiredProcessId_; }
 
 private:
     std::unordered_map<uint32_t, std::deque<PendingRuntimePresent>> pendingPresents_;
     std::unordered_map<uint32_t, std::deque<SubmitAssociation>> associations_;
+    int64_t maxCompletionAge_ = 0;
     uint64_t nextAssociationId_ = 1;
     uint64_t observedPresents_ = 0;
     uint64_t observedAssociations_ = 0;
     uint64_t observedFallbackAssociations_ = 0;
+    uint64_t matchedCompletions_ = 0;
+    uint64_t rejectedStaleCompletions_ = 0;
+    uint64_t expiredAssociations_ = 0;
+    uint32_t lastExpiredProcessId_ = 0;
+};
+
+// Turns per-prune counts into the two transitions worth a log line: tracked
+// presents stop completing as flips (a composed or copied present), and flips
+// resume. Expiry alone is not that state - a flip-model present replaced by a
+// newer one before its blank never completes either - so it starts only when
+// a prune saw submissions expire and none complete, and ends at the first
+// completion. The state changes at most once per minimum interval, so a mode
+// alternating between the two reports once instead of on every prune, and the
+// reported state is always the state held.
+class DisplaySubmissionExpiryMonitor {
+public:
+    enum class Transition : uint8_t {
+        None,
+        Started,
+        Stopped,
+    };
+
+    static constexpr uint64_t kMinTransitionIntervalMs = 10'000;
+
+    // expired is this prune's count; matchedTotal is the tracker's cumulative
+    // completion count, turned into a per-prune delta here.
+    Transition Observe(uint64_t expired, uint64_t matchedTotal, uint64_t nowMs) {
+        const uint64_t completed = matchedTotal - matchedAtLastObserve_;
+        matchedAtLastObserve_ = matchedTotal;
+        lastCompleted_ = completed;
+        const bool changeDue = !transitioned_ || nowMs - lastTransitionMs_ >= kMinTransitionIntervalMs;
+        if (!expiring_ && expired != 0 && completed == 0 && changeDue)
+            return Change(true, nowMs);
+        if (expiring_ && completed != 0 && changeDue)
+            return Change(false, nowMs);
+        return Transition::None;
+    }
+
+    bool expiring() const noexcept { return expiring_; }
+    uint64_t lastCompleted() const noexcept { return lastCompleted_; }
+
+private:
+    Transition Change(bool expiring, uint64_t nowMs) {
+        expiring_ = expiring;
+        transitioned_ = true;
+        lastTransitionMs_ = nowMs;
+        return expiring ? Transition::Started : Transition::Stopped;
+    }
+
+    bool expiring_ = false;
+    bool transitioned_ = false;
+    uint64_t lastTransitionMs_ = 0;
+    uint64_t matchedAtLastObserve_ = 0;
+    uint64_t lastCompleted_ = 0;
 };

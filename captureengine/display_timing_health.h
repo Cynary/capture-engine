@@ -6,6 +6,7 @@
 
 #include "../common/logging.h"
 #include "display_timing_intervals.h"
+#include "display_timing_submissions.h"
 
 // Which kernel event carried a frame's screen time. Reported per window because
 // only the immediate flip path can take NVIDIA's scheduled-flip announcement,
@@ -27,6 +28,15 @@ enum class DisplayCompletionSource : std::size_t {
 struct DisplayTimingHealth {
     uint64_t presents = 0;
     uint64_t associations = 0;
+    // Submissions dropped because no completion claimed them inside the
+    // completion bound, and completions refused because the only submission
+    // carrying their number was older than it. Cumulative, like the counts
+    // around them.
+    uint64_t expiredAssociations = 0;
+    uint64_t staleCompletions = 0;
+    // DisplaySubmissionExpiryMonitor's state: submissions expire while none
+    // completes, so the frames are not reaching the screen as flips at all.
+    bool submissionsExpiring = false;
     uint64_t queued = 0;
     uint64_t published = 0;
     uint64_t suppressed = 0;
@@ -182,10 +192,16 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
     // A stalled window and a healthy one report the same fields so the two stay
     // directly comparable; only the level and the prefix differ.
     const bool stalled = health.published == 0;
+    // Presents that expire unclaimed are not reaching the screen as flips, so
+    // "yet" would promise a timestamp this stream cannot deliver.
+    const char* stalledPrefix = health.submissionsExpiring
+                                    ? " no screen-change timestamp published (presents expire without a flip):"
+                                    : " no screen-change timestamp published yet:";
     if (!stalled && !Log_IsEnabled(LogLevel::Debug))
         return;
     Log(stalled ? LogLevel::Warn : LogLevel::Debug,
-        "[DisplayTiming]%s runtimePresents=%llu submitAssociations=%llu queued=%llu published=%llu "
+        "[DisplayTiming]%s runtimePresents=%llu submitAssociations=%llu expired=%llu staleRejected=%llu "
+        "queued=%llu published=%llu "
         "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
         "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
         "fallback(committed=%llu suppressed=%llu) "
@@ -201,9 +217,9 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "meanShiftUs=%lld maxShiftUs=%lld) runtimeInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
         "presentToDisplay(n=%llu meanUs=%lld stddevUs=%lld minUs=%lld p50Us=%lld p95Us=%lld p99Us=%lld "
         "maxUs=%lld)",
-        stalled ? " no screen-change timestamp published yet:" : "", health.presents, health.associations,
-        health.queued, health.published, health.suppressed, health.regressed, health.payloadReceived,
-        health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
+        stalled ? stalledPrefix : "", health.presents, health.associations, health.expiredAssociations,
+        health.staleCompletions, health.queued, health.published, health.suppressed, health.regressed,
+        health.payloadReceived, health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
         health.authoritative, health.payloadDuplicate, health.payloadLate, health.fallbackPublished,
         health.fallbackSuppressed, health.completions[0], health.completions[1], health.completions[2],
         health.completions[3], health.completions[4], health.nvReceived, health.nvUndecodable, health.nvApplied,
@@ -238,4 +254,20 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         static_cast<long long>(health.presentToDisplayP95Us),
         static_cast<long long>(health.presentToDisplayP99Us),
         static_cast<long long>(health.presentToDisplayMaxUs));
+}
+
+// State transitions only; DisplaySubmissionExpiryMonitor rate-limits them.
+inline void LogSubmissionExpiryTransition(DisplaySubmissionExpiryMonitor::Transition transition,
+                                          uint32_t processId, uint64_t expired, uint64_t completed) {
+    if (transition == DisplaySubmissionExpiryMonitor::Transition::Started) {
+        LogInfo("[DisplayTiming] Present submissions of PID %u now expire without a flip completion "
+                "(expired=%llu completed=%llu in the last prune): its frames no longer reach the screen as flips "
+                "of their own (composed or copied presentation), so no screen-change timestamp is published for "
+                "them and the overlay falls back to presentation timing",
+                processId, static_cast<unsigned long long>(expired), static_cast<unsigned long long>(completed));
+    } else if (transition == DisplaySubmissionExpiryMonitor::Transition::Stopped) {
+        LogInfo("[DisplayTiming] Flip completions resumed for tracked presents (completed=%llu expired=%llu in "
+                "the last prune); screen-change timing is measuring again",
+                static_cast<unsigned long long>(completed), static_cast<unsigned long long>(expired));
+    }
 }
