@@ -4,6 +4,10 @@
 
 Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6757).
 
+### New
+
+- **Presentation timing diagnostics:** an explicitly created observer channel exports bounded Present and final-output callback timestamps without requesting video capture. These are CPU observations, not GPU completion times or proof of frame identity through Windows Graphics Capture.
+
 ### Fixed
 
 - **D3D11 games freezing after capture reconnect:** retire capture resources on their owning render thread when the game uses a single-threaded device. Background destruction violated that device contract; Overcooked 2 could freeze a few frames into the next session. Thread-safe devices retain worker cleanup.

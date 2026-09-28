@@ -1,4 +1,5 @@
 #include "pacing_trace.h"
+#include "present_observer.h"
 #include "pacing_trace_boundary.h"
 #include "pacing_trace_analysis.h"
 #include "perf_logger.h"
@@ -11,6 +12,22 @@
 
 namespace ce::pacing_trace {
 namespace {
+std::atomic<present_observer::Shared*> observer{nullptr};
+// The view stays valid for every concurrent producer until the DLL exits.
+void AttachObserver() {
+    if (observer.load(std::memory_order_acquire)) return;
+    wchar_t name[80];
+    swprintf(name, 80, L"Local\\CEPresentTiming-%lu", GetCurrentProcessId());
+    HANDLE mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name);
+    if (!mapping) return;
+    auto* view = static_cast<present_observer::Shared*>(MapViewOfFile(
+        mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(present_observer::Shared)));
+    CloseHandle(mapping);
+    if (!view) return;
+    if (!present_observer::Accept(*view)) { UnmapViewOfFile(view); return; }
+    observer.store(view, std::memory_order_release);
+    HookLogImportant("[PresentObserver] timestamp-only observer attached; no texture capture requested by this channel");
+}
 Ring<49152> ring;
 Ring<16384> submissions;
 std::atomic<bool> enabled{false};
@@ -139,6 +156,7 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
 
 void Initialize(const char* perfPath) {
     std::lock_guard<std::mutex> lock(sessionMutex);
+    AttachObserver();
     directory = std::filesystem::path(perfPath).parent_path();
     sessionStart = ring.Total();
     submissionStart = submissions.Total();
@@ -152,6 +170,9 @@ void Record(Kind kind, uint64_t id, const void* object, uint64_t a, uint64_t b, 
     if (!enabled.load(std::memory_order_relaxed)) return;
     const Event event{timeUs ? timeUs : PerfLogger::GetQpcUs(), epoch.load(std::memory_order_relaxed), id,
         reinterpret_cast<uintptr_t>(object), a, b, c, GetCurrentThreadId(), flags, kind};
+    if (auto* view = observer.load(std::memory_order_acquire);
+        view && view->active.load(std::memory_order_relaxed) && present_observer::IsObservation(kind))
+        view->events.Push(event);
     if (kind == Kind::Submit) submissions.Push(event);
     else ring.Push(event);
 }

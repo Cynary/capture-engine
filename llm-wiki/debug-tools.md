@@ -198,3 +198,20 @@ Built-in, ALWAYS-ON (no env/flag/install), written via `HookLogImportant` to `ho
   creates its layered DXGI swapchain. Known limitation: the probe's ICD tracing is not compatible with RTSS's
   Vulkan layer plus CE's loader hooks in one process (RTSSVkLayer64 null-derefs at `vkCreateInstance`), so use CE's
   own log line for in-CE runs.
+
+## Opt-in Present timestamp observer (verified 2026-09-28)
+
+`hook/common/present_observer.h` defines a separate, version-checked diagnostic
+mapping named `Local\\CEPresentTiming-<PID>`. A controller must create it before
+injection. `pacing_trace.cpp` attaches only to an existing mapping and mirrors
+Present begin/forward/end plus final-output events into its bounded ring. It
+retains the view until process exit to avoid racing writers; use a fresh target
+process for another observer. The reader can disable recording with `active`.
+This does not alter the shared-texture ABI. A timestamp-only consumer must leave
+capture requests disabled; the integration test verifies an empty texture ring.
+
+These timestamps describe CPU observations, not completed GPU rendering. The
+final-output event records actual QPC separately from any scheduled presentation
+time. Tests cover mapping acceptance and event filtering. Native incremental
+build/unit tests passed; live D3D11 fixture and D3D12 game observation produced
+events without texture capture. Generated-output identity remains unvalidated.

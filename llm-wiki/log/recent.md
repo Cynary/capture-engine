@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-09-28 — timestamp-only presentation observation
+
+Added a separate opt-in ring for Present and final-output CPU timestamps. The
+normal capture request remains disabled during observation. Native build/tests,
+an empty-texture-ring check, and live fixture/game runs passed. A pixel-ID fixture
+validated the ETW selection association; arbitrary games still lack pixel IDs,
+so their callback association remains an inference. See [debug tools](../debug-tools.md).
+
 ### 2026-09-28 — single-threaded D3D11 capture retirement
 
 Overcooked 2 reconnect stalled after 14–15 frames with its render thread waiting

@@ -8,7 +8,7 @@
 
 namespace ce::pacing_trace {
 enum class Kind : uint32_t { Epoch, DisplayPair, CallbackBegin, CallbackEnd, Work, Submit, Fence, Marker, Frame, MarkerObserved, FenceSignal,
-                             PresentBegin, PresentForward, PresentEnd, GpuSpan };
+                             PresentBegin, PresentForward, PresentEnd, GpuSpan, FinalOutput };
 struct Event {
     int64_t timeUs = 0;
     uint64_t epoch = 0, id = 0, object = 0, a = 0, b = 0, c = 0;

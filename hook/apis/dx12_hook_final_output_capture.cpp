@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/pacing_trace.h"
 
 namespace {
 
@@ -66,6 +67,10 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
     if (captureRoute == ce::dx12_overlay_policy::PostSLPresentedCaptureRoute::kNone)
         return plan;
 
+    ce::pacing_trace::Record(ce::pacing_trace::Kind::FinalOutput, 0, nullptr,
+                            static_cast<uint64_t>(GetCurrentQpc()),
+                            static_cast<uint64_t>(GetQpcFrequency()), 0,
+                            captureRoute == ce::dx12_overlay_policy::PostSLPresentedCaptureRoute::kSuspendedBaseOutput ? 0 : 1);
     plan.captureCandidate = shm && g_IPC && g_IPC->IsRecording() &&
                             shm->runtimeState.IsInjectVideoCaptureRequested();
     plan.includeOverlay = overlayConfig.showOverlay && overlayConfig.captureIncludeOverlay;
