@@ -24,6 +24,28 @@ inline bool IsInjectTransportSnapshotConsistent(uint64_t generationBefore, uint6
     return generationBefore == generationAfter && static_cast<uint32_t>(generationBefore) == frameGeneration;
 }
 
+// Which slot carries the inject fence handle. Producer and media must agree, so
+// both key on useEncoderTextures: it states that the producer actually hands the
+// encoder its own textures. encoderTextures.ready only says the media created
+// them, which it does at every recording start - even for producers that never
+// adopt them.
+inline bool InjectFenceUsesEncoderTextureSlot(const SharedMemoryLayout& sharedMem) {
+    return sharedMem.useEncoderTextures.load(std::memory_order_acquire);
+}
+
+// Stores the producer's fence handle in the slot ReadInjectTransportSnapshot
+// reads it from. The caller begins the transport generation first. Returns
+// whether the encoder-texture slot was written.
+inline bool PublishInjectFenceHandle(SharedMemoryLayout& sharedMem, uint64_t fenceHandle) {
+    const bool encoderTextureSlot = InjectFenceUsesEncoderTextureSlot(sharedMem);
+    if (encoderTextureSlot) {
+        sharedMem.encoderTextures.SetFenceHandle(fenceHandle);
+    } else {
+        sharedMem.SetFenceShareHandle(fenceHandle);
+    }
+    return encoderTextureSlot;
+}
+
 // Reads the texture/fence handles for one inject frame under the transport
 // generation protocol (see SharedMemoryLayout::BeginTransportGeneration).
 inline InjectTransportSnapshot ReadInjectTransportSnapshot(const SharedMemoryLayout& sharedMem, int textureIndex,

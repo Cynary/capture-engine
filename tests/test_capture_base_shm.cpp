@@ -172,6 +172,45 @@ TEST(CaptureBaseShmTest, TransportSnapshotReadsTheEncoderTextureFenceWhenAdopted
     EXPECT_EQ(encoderFence.fenceHandle, 0x500u);
 }
 
+// Doom Eternal (native Vulkan) resized 4K -> 1440p mid-recording. Media had
+// created its encoder textures at recording start (encoderTextures.ready), the
+// layer never adopted them, and the resize published the new fence into the
+// encoder-texture slot. Media kept reading the retired fence from the shared
+// slot, and deferred every frame once new fence values passed its last value.
+TEST(CaptureBaseShmTest, FenceRepublishedAfterResizeReachesTheSlotMediaReads) {
+    SharedMemoryLayout shm{};
+    InitShm(shm);
+    shm.BeginTransportGeneration();
+    ASSERT_FALSE(ce::PublishInjectFenceHandle(shm, 0x2050));
+
+    shm.encoderTextures.SetFenceHandle(0xB0C);
+    shm.encoderTextures.ready.store(true, std::memory_order_release);
+    shm.useEncoderTextures.store(false, std::memory_order_release);
+
+    const uint32_t resizedGeneration = static_cast<uint32_t>(shm.BeginTransportGeneration());
+    EXPECT_FALSE(ce::PublishInjectFenceHandle(shm, 0x2184));
+
+    const ce::InjectTransportSnapshot snapshot =
+        ce::ReadInjectTransportSnapshot(shm, 0, ce::InjectFenceUsesEncoderTextureSlot(shm), resizedGeneration);
+    EXPECT_TRUE(snapshot.consistent);
+    EXPECT_EQ(snapshot.fenceHandle, 0x2184u);
+    EXPECT_EQ(shm.encoderTextures.GetFenceHandle(), 0xB0Cu);
+}
+
+TEST(CaptureBaseShmTest, FencePublishFollowsEncoderTextureAdoption) {
+    SharedMemoryLayout shm{};
+    InitShm(shm);
+    shm.useEncoderTextures.store(true, std::memory_order_release);
+    const uint32_t generation = static_cast<uint32_t>(shm.BeginTransportGeneration());
+    shm.SetFenceShareHandle(0x400);
+    EXPECT_TRUE(ce::PublishInjectFenceHandle(shm, 0x600));
+
+    const ce::InjectTransportSnapshot snapshot =
+        ce::ReadInjectTransportSnapshot(shm, 0, ce::InjectFenceUsesEncoderTextureSlot(shm), generation);
+    EXPECT_EQ(snapshot.fenceHandle, 0x600u);
+    EXPECT_EQ(shm.GetFenceShareHandle(), 0x400u);
+}
+
 TEST(CaptureBaseShmTest, VulkanProducerPoolsCoverTheFullSharedTextureLeaseSpace) {
     EXPECT_EQ(ENCODER_TEXTURE_SLOT_COUNT, SHARED_TEXTURE_SLOT_COUNT);
     EXPECT_EQ(SHARED_TEXTURE_SLOT_COUNT, 16);

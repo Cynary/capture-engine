@@ -405,7 +405,19 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
             // and the Bresenham produces a duplicate. Stutter > corruption.
             DWORD waitRes = WaitForSingleObject(fenceEvent, 0);
             if (waitRes == WAIT_TIMEOUT) {
-                // Fence not ready — skip this frame, encoder thread stays responsive
+                // Fence not ready — skip this frame, encoder thread stays responsive.
+                // A completed value that never advances means media waits on a
+                // fence the producer no longer signals (e.g. a stale handle slot).
+                static uint64_t s_lastFenceDeferLogTick = 0;
+                const uint64_t nowTick = GetTickCount64();
+                if (nowTick - s_lastFenceDeferLogTick >= 1000) {
+                    s_lastFenceDeferLogTick = nowTick;
+                    DLL_Log(
+                        "[VideoEncoder] Frame %d: fence not ready (value=%llu completed=%llu generation=%u); "
+                        "deferring frame",
+                        encodeFrameCounter, static_cast<unsigned long long>(fenceValue),
+                        static_cast<unsigned long long>(d3d11Fence->GetCompletedValue()), cachedTransportGeneration);
+                }
                 bgraTex->Release();
                 d3d11Fence->Release();
                 d3d11Fence = nullptr;

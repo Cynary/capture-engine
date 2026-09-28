@@ -1,5 +1,7 @@
 #include "layer_capture_internal.h"
 
+#include "../../common/inject_transport_snapshot.h"
+
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
                        VkExtent2D extent,
                        uint32_t imageCount) {
@@ -438,24 +440,19 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     }
 
     mem = g_IPCClient.GetSharedMem();
-    if (fenceToPublish) {
-        if (mem) {
-            if (mem->encoderTextures.ready.load(std::memory_order_acquire)) {
-                LayerIPC_BeginTransportGeneration();
-                mem->encoderTextures.SetFenceHandle((uint64_t)fenceToPublish);
-                LayerLog("Vulkan Layer: Published capture fence handle %p to encoderTextures", fenceToPublish);
-            } else {
-                LayerIPC_SetFence(fenceToPublish);
-                LayerLog("Vulkan Layer: Published capture fence handle %p", fenceToPublish);
-            }
-        }
-    } else if (mem) {
-        if (mem->encoderTextures.ready.load(std::memory_order_acquire)) {
-            LayerIPC_BeginTransportGeneration();
-            mem->encoderTextures.SetFenceHandle(0);
-        } else {
-            LayerIPC_SetFence(nullptr);
-        }
+    if (mem) {
+        // Media reads the fence from the slot useEncoderTextures selects. Keying
+        // this on encoderTextures.ready instead published a resize's new fence
+        // where media never looked (it creates its textures at recording start),
+        // so it kept waiting on the retired fence and deferred every frame once
+        // the new values passed the old fence's last one.
+        LayerIPC_BeginTransportGeneration();
+        const bool encoderTextureSlot = ce::PublishInjectFenceHandle(*mem, (uint64_t)fenceToPublish);
+        LayerLog(
+            "Vulkan Layer: Published capture fence handle %p (slot=%s usingEncoderTextures=%d "
+            "encoderTexturesReady=%d)",
+            fenceToPublish, encoderTextureSlot ? "encoderTextures" : "shared", usingEncoderTextures ? 1 : 0,
+            mem->encoderTextures.ready.load(std::memory_order_acquire) ? 1 : 0);
     }
 
     state.initialized = true;

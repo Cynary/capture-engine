@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-09-28 - Vulkan resize mid-recording froze video: fence published to the wrong slot
+
+- `logs/20260928_001303` (0.1.6845, DOOM Eternal native Vulkan with NVIDIA present-on-DXGI, inject capture):
+  4K -> 1440p at 00:14:00. Layer retired the swapchain and published generation 9/10 (2560x1440, new fence
+  `0x2184`, logged "Published capture fence handle ... to encoderTextures"). Media opened the new textures and fitted
+  1440p into the 4K recording, but frames stopped at 00:14:06.5: every tick `Deferred inject frame`, `DupDef=120`,
+  `TickUnique=0` until stop. The first deferred frame had fence 802; the old generation ended at fence 801.
+- Root cause: `InitializeCapture` wrote the fence to `encoderTextures` whenever `encoderTextures.ready` was set.
+  Media sets it at every recording start ("Created encoder KMT textures early"), but reads that slot only when
+  `useEncoderTextures` is set, which native Vulkan never sets. Media re-read the stale shared-slot handle of the
+  retired fence (still alive, completed value 801) and `WaitForFrameFence` deferred every new-generation value
+  above it (the ~6 s before that were encoded without a real GPU wait). Earlier generations were published before
+  recording start (`ready=0`), so they used the shared slot and the bug stayed hidden.
+- Fix: `ce::PublishInjectFenceHandle` / `ce::InjectFenceUsesEncoderTextureSlot` in
+  `common/inject_transport_snapshot.h` hold the single slot rule for producer and media; the layer uses it and logs
+  slot/usingEncoderTextures/ready. Tests: `CaptureBaseShmTest.FenceRepublishedAfterResizeReachesTheSlotMediaReads`,
+  `FencePublishFollowsEncoderTextureAdoption`.
+- **Open (not changed):** the DXVK late-adoption path (`layer_capture_capture.cpp`, "adopted encoder KMT textures
+  after media startup") flips `useEncoderTextures` to true without publishing a fence into the encoder-texture slot,
+  and after adoption signals the Vulkan shared fence rather than the IPC relay fence. Unverified on hardware.
+
 ### 2026-09-27 - Recording-start latency: probe early stop, truthful live timing, WGC reserve-wait finding
 
 - `logs/20260927_195021` (0.1.6844, DXGI-dup desktop + Brave audio, first recording of the session): hotkey ->
