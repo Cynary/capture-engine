@@ -37,6 +37,8 @@ inline constexpr GUID kNvidiaDisplayProvider = {
 inline constexpr uint16_t kRuntimePresentStart = 0x2a;
 inline constexpr uint16_t kRuntimeMpoPresentStart = 0x37;
 inline constexpr uint16_t kQueuePacketStart = 0xb2;
+// QueuePacket_Stop: the packet finished; carries SubmitSequence only.
+inline constexpr uint16_t kQueuePacketStop = 0xb4;
 inline constexpr uint16_t kMmioFlip = 0x74;
 inline constexpr uint16_t kMmioMpoFlip = 0x103;
 inline constexpr uint16_t kVsync = 0x11;

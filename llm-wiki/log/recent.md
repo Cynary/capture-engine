@@ -11,6 +11,15 @@
   while the game ran at 140. The cause was stale unflipped submissions claimed by unrelated VSync completions.
   Fix: 1 s completion bound and short submission retention, see `display-change-timing.md` "Completion bound and composed presentation".
   Only verified by Linux-built unit tests (no MinGW or Windows run in this session).
+- Follow-up `logs/20260928_044654` (0.1.6848): catch-up gone, transition logged, but the latency row showed
+  `PC Latency -`: the estimate needs display samples and composed frames had none. Added compositor-based timing
+  (`display_timing_composed.h`, DWM via `QueuePacket_Stop` readiness) and split the service into
+  `_internal.h` + `display_timing_service.cpp` + `display_timing_service_events.cpp` (was 820 lines). Syntax-checked on
+  Linux against stub Windows/ETW headers only; next session must confirm `composed(ready>0 published>0)`.
+- Same session answers the flapping: every 2560x1440 swapchain got `vkQueuePresentKHR` -> `VK_ERROR_OUT_OF_DATE_KHR`
+  from the driver right away (occurrences #1-#4), the game rebuilt at 3840x2160 and later switched back to 1440p by
+  itself; the other 9 of 14 recreations had no invalidation result. CE passes results through untouched: game/driver
+  mode-change behaviour, not a CE defect.
 
 ### 2026-09-28 - Vulkan resize mid-recording froze video: fence published to the wrong slot
 

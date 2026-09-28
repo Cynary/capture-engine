@@ -35,7 +35,7 @@ ULONG OpenSessionAndEnableProviders(TRACEHANDLE* session, const wchar_t* session
     if (status == ERROR_SUCCESS) {
         status = dte::EnableFilteredProvider(
             *session, dte::kGraphicsKernelProvider, dte::kGraphicsKernelKeyword,
-            {dte::kQueuePacketStart, dte::kMmioFlip, dte::kMmioMpoFlip, dte::kVsync,
+            {dte::kQueuePacketStart, dte::kQueuePacketStop, dte::kMmioFlip, dte::kMmioMpoFlip, dte::kVsync,
              dte::kVsyncMpo, dte::kHsyncMpo, dte::kMpoPresentIds});
     }
     if (status != ERROR_SUCCESS) {

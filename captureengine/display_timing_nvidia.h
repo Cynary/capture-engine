@@ -211,3 +211,56 @@ private:
 
     std::unordered_map<uint32_t, PendingRequest> requests_;
 };
+
+// The decoder and the pairing tracker as the service uses them, with the
+// counters its health line reports. Delays are in QPC ticks.
+class NvidiaFlipSchedule {
+public:
+    void SetQpcFrequency(int64_t frequency) { decoder_.SetQpcFrequency(frequency); }
+
+    void ObserveRequest(uint32_t threadId, const void* payload, std::size_t payloadBytes, int64_t eventQpc) {
+        ++received_;
+        const int64_t announcedQpc = decoder_.Decode(payload, payloadBytes, eventQpc);
+        if (announcedQpc == 0) {
+            ++undecodable_;
+            return;
+        }
+        flips_.ObserveAnnouncement(threadId, eventQpc, announcedQpc);
+    }
+
+    // Consumes the announcement of the flip programmed on threadId. apply is
+    // false for a flip whose screen time comes from a later ?SyncDPC: its
+    // announcement must still be taken so it is never applied to another flip.
+    NvidiaFlipDelay TakeFlipDelay(uint32_t threadId, bool apply = true) {
+        const NvidiaFlipDelay announced = flips_.TakeFlipDelay(threadId);
+        if (!apply || !announced.matched)
+            return apply ? announced : NvidiaFlipDelay{};
+        ++applied_;
+        delayTotal_ += announced.delay;
+        delayMax_ = std::max(delayMax_, announced.delay);
+        return announced;
+    }
+
+    void PruneBefore(int64_t cutoff) { flips_.PruneBefore(cutoff); }
+
+    void Clear() {
+        flips_.Clear();
+        decoder_.Reset();
+    }
+
+    const NvidiaFlipAnnouncementDecoder& decoder() const noexcept { return decoder_; }
+    uint64_t received() const noexcept { return received_; }
+    uint64_t undecodable() const noexcept { return undecodable_; }
+    uint64_t applied() const noexcept { return applied_; }
+    int64_t delayTotal() const noexcept { return delayTotal_; }
+    int64_t delayMax() const noexcept { return delayMax_; }
+
+private:
+    NvidiaFlipAnnouncementDecoder decoder_;
+    NvidiaFlipDelayTracker flips_;
+    uint64_t received_ = 0;
+    uint64_t undecodable_ = 0;
+    uint64_t applied_ = 0;
+    int64_t delayTotal_ = 0;
+    int64_t delayMax_ = 0;
+};

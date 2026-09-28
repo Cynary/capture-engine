@@ -101,8 +101,12 @@ stream is unavailable, denied, failed, or two seconds stale.
   `display_timing_nvidia.h` the NVIDIA announcement reducer, `display_timing_correlation.h` the FrameType reducer,
   `display_timing_submissions.h` the runtime-present/kernel-submission association, `display_timing_vblank.h` the
   diagnostic vertical-blank summary, `display_timing_intervals.h` the per-window interval statistics,
-  `display_timing_policy.h` the present/submission selection and the collection/present-selection policy, and
-  `display_timing_health.h` the health snapshot type and its formatting.
+  `display_timing_policy.h` the present/submission selection and the collection/present-selection policy,
+  `display_timing_composed.h` / `display_timing_compositor.*` composed presentation, and
+  `display_timing_health.h` the health snapshot type and its formatting. The service itself is
+  `display_timing_service_internal.h` (the `Impl` class) with `display_timing_service.cpp` (session lifecycle,
+  draining, pruning, health) and `display_timing_service_events.cpp` (ETW event reducers); the NVIDIA decoder,
+  pairing tracker and counters are wrapped as `NvidiaFlipSchedule`.
 - The per-window health line reports
   `completion(vsyncDpc,vsyncDpcMpo,hsyncDpcMpo,immediateFlip,immediateMpoFlip)` and
   `nvFlipSchedule(received,undecodable,applied,avgDelayUs,maxDelayUs,fieldOffset,abandoned)`. Only the immediate flip
@@ -141,15 +145,31 @@ stream is unavailable, denied, failed, or two seconds stale.
 - **Why 1 s:** a flip queue holds a few frames, so present-to-display exceeds 1 s only below ~3 fps with a full
   queue, where presentation timing is the better source anyway. A dropped late sample never invents a short frame:
   the next published interval spans the gap.
-- **Composed presentation is currently unmeasured, by design:** with nothing published, the consumer's 2 s staleness
-  rule falls back to presentation timing. `DisplaySubmissionExpiryMonitor` reports the state as
-  `Present submissions of PID N now expire without a flip completion` / `Flip completions resumed`. The state starts
-  only when a prune sees expiry *and no completion*, because flip-model presents replaced before their blank also
-  expire during normal play. It changes at most once per 10 s. The stalled health warning names it
-  (`presents expire without a flip`). Open question: measuring composed frames through DWM's own flips (the way
-  PresentMon completes `Composed_*` presents) would need DWM token events CE does not collect.
+- **Composed presentation is measured through the compositor (2026-09-28, session `20260928_044654`).** Without it
+  the stream published nothing for the composed game, so the overlay's latency row fell to `PC Latency -`: the
+  estimate (`Source::Estimated`) is built only from display samples. `DisplaySubmissionExpiryMonitor` detects the
+  state (expiry *and no own completion* in a prune, at most one change per 10 s; flip-model discards also expire, so
+  expiry alone is not the signal) and the service then follows the session's `dwm.exe`
+  (`display_timing_compositor.{h,cpp}`, `SelectCompositorProcess`). `ComposedPresentation`
+  (`display_timing_composed.h`):
+  - `QueuePacket_Stop` (DxgKrnl event 180, `kQueuePacketStop`; carries only `SubmitSequence`, not attributed to the
+    submitting process) of a composed-process present = its surface is ready. Checked against the completion bound.
+  - A compositor present that completes (any flip path) shows the newest composed frame that was ready by the
+    compositor's own `QueuePacket_Start`; older ready frames are counted `superseded`. The game's association is
+    erased only if still waiting (`EraseAssociation`), so a frame its own flip already completed is never published
+    twice.
+  - Only the tracked processes' own completions (`ownCompletions_`) end the state; the compositor's flips do not.
+    At the end the compositor's outstanding submissions are dropped (`EraseProcess`), not counted as expired.
+  - Accuracy: a surface that became ready while DWM was already building its frame is attributed to that frame, so a
+    screen time can be up to one refresh early. DWM's own provider (token state) would remove that; it is not
+    collected. Unverified on hardware: the event ID 180 and that the NVIDIA composed path emits a per-present
+    `QueuePacket_Stop`. `composed(ready=0 ...)` in the health line with `pid!=0` means the event is not arriving.
+  - Health: `composed(pid compositorPid ready published superseded)`. The compositor's own submissions are counted in
+    `submitAssociations`.
 - Coverage: `tests/test_display_timing_submissions.cpp` (bound, stale skip, reuse by a fresh submission, causal
-  order, prune accounting, monitor transitions and rate limit).
+  order, prune accounting, monitor transitions and rate limit) and `tests/test_display_timing_composed.cpp` (newest
+  ready frame per composition, supersession, out-of-order ready events, bound/foreign-process rejection, compositor
+  selection by session, the service's routing contract).
 
 ## Event timestamps, not an inferred refresh grid
 

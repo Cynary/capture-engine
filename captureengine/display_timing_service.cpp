@@ -1,36 +1,4 @@
-#include "display_timing_service.h"
-#include "display_timing_correlation.h"
-#include "display_timing_etw.h"
-#include "display_timing_health.h"
-#include "display_timing_intervals.h"
-#include "display_timing_nvidia.h"
-#include "display_timing_policy.h"
-#include "display_timing_publication.h"
-#include "display_timing_refresh.h"
-#include "display_timing_session_reclaim.h"
-#include "display_timing_startup.h"
-#include "display_timing_submissions.h"
-#include "display_timing_vblank.h"
-
-#include <windows.h>
-#include <evntrace.h>
-#include <tdh.h>
-
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <cstddef>
-#include <cwchar>
-#include <cstring>
-#include <deque>
-#include <iterator>
-#include <mutex>
-#include <thread>
-#include <utility>
-#include <vector>
-
-#include "../common/display_timing_shared.h"
-#include "../common/logging.h"
+#include "display_timing_service_internal.h"
 
 using namespace display_timing_etw;
 
@@ -44,740 +12,339 @@ constexpr uint64_t kRefreshPeriodQueryMs = 2'000;
 
 }  // namespace
 
-class DisplayTimingService::Impl {
-public:
-    ~Impl() noexcept {
-        StopNoexcept();
+void DisplayTimingService::Impl::Start() {
+    if (started_.exchange(true, std::memory_order_acq_rel))
+        return;
+
+    LARGE_INTEGER frequency = {};
+    QueryPerformanceFrequency(&frequency);
+    qpcFrequency_ = frequency.QuadPart;
+    submissions_.SetMaxCompletionAge(kMaxSubmitToCompletionUs * qpcFrequency_ / 1'000'000);
+    nvidiaSchedule_.SetQpcFrequency(qpcFrequency_);
+    outputs_.SetQpcFrequency(qpcFrequency_);
+    RefreshDisplayPeriods();
+    swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
+    const ULONG status = ce::display_timing_startup::OpenSessionAndEnableProviders(&session_, sessionName_);
+    if (status != ERROR_SUCCESS) {
+        SetStartupFailure(status);
+        return;
     }
 
-    void Start() {
-        if (started_.exchange(true, std::memory_order_acq_rel))
-            return;
-
-        LARGE_INTEGER frequency = {};
-        QueryPerformanceFrequency(&frequency);
-        qpcFrequency_ = frequency.QuadPart;
-        submissions_.SetMaxCompletionAge(kMaxSubmitToCompletionUs * qpcFrequency_ / 1'000'000);
-        nvidiaAnnouncements_.SetQpcFrequency(qpcFrequency_);
-        outputs_.SetQpcFrequency(qpcFrequency_);
-        RefreshDisplayPeriods();
-        swprintf(sessionName_, std::size(sessionName_), L"CE_DisplayTiming_%08X", GetCurrentProcessId());
-        const ULONG status = ce::display_timing_startup::OpenSessionAndEnableProviders(&session_, sessionName_);
-        if (status != ERROR_SUCCESS) {
-            SetStartupFailure(status);
-            return;
-        }
-
-        EVENT_TRACE_LOGFILEW trace = {};
-        trace.LoggerName = sessionName_;
-        trace.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD |
-                                 PROCESS_TRACE_MODE_RAW_TIMESTAMP;
-        trace.EventRecordCallback = &EventRecordThunk;
-        trace.BufferCallback = &BufferThunk;
-        trace.Context = this;
-        traceHandle_ = OpenTraceW(&trace);
-        if (traceHandle_ == INVALID_PROCESSTRACE_HANDLE) {
-            SetStartupFailure(GetLastError());
-            StopTraceSession();
-            return;
-        }
-
-        stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        if (!stopEvent_) {
-            SetStartupFailure(GetLastError());
-            CloseTrace(traceHandle_);
-            traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
-            StopTraceSession();
-            return;
-        }
-
-        startupStatus_.store(DisplayTimingStatus::Starting, std::memory_order_release);
-        processThread_ = std::thread([this] {
-            const ULONG traceStatus = ProcessTrace(&traceHandle_, 1, nullptr, nullptr);
-            // ERROR_CANCELLED is the ordinary result of stopping the session.
-            if (traceStatus != ERROR_SUCCESS && traceStatus != ERROR_CANCELLED) {
-                startupStatus_.store(DisplayTimingStatus::Failed, std::memory_order_release);
-                LogWarn("[DisplayTiming] Event consumption stopped: %lu", traceStatus);
-            }
-        });
-        flushThread_ = std::thread([this] { FlushLoop(); });
-        LogInfo("[DisplayTiming] Screen-change timing service started (flush=%lums reorder=%lldus "
-                "timestampPolicy=event/no-grid graphTime=refresh-bounded)",
-                kTraceFlushPeriodMs, static_cast<long long>(kTimestampReorderWindowUs));
-    }
-
-    void UpdateTargets(const std::vector<DisplayTimingTarget>& targets) {
-        std::lock_guard<std::mutex> lock(mutex_);
-
-        for (const auto& oldTarget : targets_) {
-            const bool retained = std::any_of(targets.begin(), targets.end(), [&](const DisplayTimingTarget& target) {
-                return target.output == oldTarget.output && target.sourcePid == oldTarget.sourcePid &&
-                       target.rendererPid == oldTarget.rendererPid;
-            });
-            if (!retained && oldTarget.output) {
-                oldTarget.output->Reset(0, 0, DisplayTimingStatus::Unavailable);
-                outputs_.Forget(oldTarget.output);
-            }
-        }
-
-        for (const auto& target : targets) {
-            const bool unchanged = std::any_of(targets_.begin(), targets_.end(), [&](const DisplayTimingTarget& old) {
-                return target.output == old.output && target.sourcePid == old.sourcePid &&
-                       target.rendererPid == old.rendererPid;
-            });
-            if (!unchanged && target.output) {
-                target.output->Reset(target.sourcePid, target.rendererPid,
-                                     startupStatus_.load(std::memory_order_acquire));
-                outputs_.Track(target.output);
-            }
-        }
-        targets_ = targets;
-    }
-
-private:
-
-    static void WINAPI EventRecordThunk(EVENT_RECORD* event) {
-        static_cast<Impl*>(event->UserContext)->HandleEvent(event);
-    }
-
-    static ULONG WINAPI BufferThunk(EVENT_TRACE_LOGFILEW* trace) {
-        auto* self = static_cast<Impl*>(trace->Context);
-        self->ObserveTraceLosses(trace->EventsLost);
-        LARGE_INTEGER now = {};
-        QueryPerformanceCounter(&now);
-        self->DrainReady(now.QuadPart, false);
-        return TRUE;
-    }
-
-    void SetStartupFailure(ULONG error) {
-        const DisplayTimingStatus status =
-            error == ERROR_ACCESS_DENIED ? DisplayTimingStatus::AccessDenied : DisplayTimingStatus::Failed;
-        startupStatus_.store(status, std::memory_order_release);
-        ce::display_timing_startup::LogStartupFailure(error);
-    }
-
-    void ObserveTraceLosses(ULONG eventsLost) {
-        ULONG loggedTotal = 0;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (eventsLost > observedTraceEventsLost_) {
-                const ULONG newlyLost = eventsLost - observedTraceEventsLost_;
-                observedTraceEventsLost_ = eventsLost;
-                for (const auto& target : targets_) {
-                    if (target.output)
-                        target.output->droppedTimestampCount.fetch_add(newlyLost, std::memory_order_relaxed);
-                }
-            }
-            const uint64_t now = GetTickCount64();
-            if (observedTraceEventsLost_ > loggedTraceEventsLost_ &&
-                (lastTraceLossLogTime_ == 0 || now - lastTraceLossLogTime_ >= 10000)) {
-                loggedTraceEventsLost_ = observedTraceEventsLost_;
-                lastTraceLossLogTime_ = now;
-                loggedTotal = loggedTraceEventsLost_;
-            }
-        }
-        if (loggedTotal != 0)
-            LogWarn("[DisplayTiming] Graphics event loss detected: total=%lu", loggedTotal);
-    }
-
-    bool IsTrackedProcess(uint32_t processId) const {
-        return std::any_of(targets_.begin(), targets_.end(), [&](const DisplayTimingTarget& target) {
-            return target.sourcePid == processId || (target.rendererPid != 0 && target.rendererPid == processId);
-        });
-    }
-
-    void HandleEvent(EVENT_RECORD* event) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const auto& header = event->EventHeader;
-        if (IsEqualGUID(header.ProviderId, kRuntimeProvider)) {
-            if ((header.EventDescriptor.Id == kRuntimePresentStart ||
-                 header.EventDescriptor.Id == kRuntimeMpoPresentStart) &&
-                IsTrackedProcess(header.ProcessId)) {
-                // SyncInterval >= 1 is what makes a flip unable to tear; the
-                // refresh bound applies to nothing else.
-                uint32_t syncInterval = 0;
-                const int32_t presentSync = ReadProperty(event, L"SyncInterval", syncInterval)
-                                                ? static_cast<int32_t>(std::min<uint32_t>(syncInterval, 4))
-                                                : kUnknownSyncInterval;
-                submissions_.ObserveRuntimePresent(header.ProcessId, header.ThreadId,
-                                                   header.TimeStamp.QuadPart, presentSync);
-                // The same frames the published series is built from, measured
-                // one stage earlier. Several tracked processes would interleave
-                // into one meaningless series, so the accumulator follows the
-                // most recent one instead of mixing them.
-                if (runtimeIntervalPid_ != header.ProcessId) {
-                    runtimeIntervalPid_ = header.ProcessId;
-                    runtimeIntervals_.StartWindow();
-                }
-                runtimeIntervals_.Observe(DisplayTimingQpcToUs(header.TimeStamp.QuadPart, qpcFrequency_));
-            }
-            return;
-        }
-
-        if (IsEqualGUID(header.ProviderId, kGraphicsKernelProvider)) {
-            HandleGraphicsKernelEvent(event);
-            return;
-        }
-
-        if (IsEqualGUID(header.ProviderId, kNvidiaDisplayProvider) &&
-            header.EventDescriptor.Id == kNvidiaFlipRequest) {
-            HandleNvidiaFlipRequest(event);
-            return;
-        }
-
-        if (IsEqualGUID(header.ProviderId, kFrameTypeProvider) && header.EventDescriptor.Id == kGeneratedFlip)
-            HandleGeneratedFlip(event);
-    }
-
-    // The announcement carries the time the driver scheduled the flip for, which
-    // is the only screen time available while frame generation paces several
-    // flips out of one render. The provider has no registered manifest, so the
-    // payload is read positionally and the field is located by value; see
-    // display_timing_nvidia.h.
-    void HandleNvidiaFlipRequest(EVENT_RECORD* event) {
-        ++nvidiaAnnouncementsReceived_;
-        const int64_t eventQpc = event->EventHeader.TimeStamp.QuadPart;
-        const int64_t announcedQpc =
-            nvidiaAnnouncements_.Decode(event->UserData, event->UserDataLength, eventQpc);
-        if (announcedQpc == 0) {
-            ++nvidiaAnnouncementsUndecodable_;
-            return;
-        }
-        nvidiaFlips_.ObserveAnnouncement(event->EventHeader.ThreadId, eventQpc, announcedQpc);
-    }
-
-    void HandleGraphicsKernelEvent(EVENT_RECORD* event) {
-        const auto& header = event->EventHeader;
-        switch (header.EventDescriptor.Id) {
-            case kQueuePacketStart:
-                HandleQueuePacket(event);
-                break;
-            case kVsync:
-                HandleVsync(event);
-                break;
-            case kVsyncMpo:
-            case kHsyncMpo:
-                HandleMpoSync(event);
-                break;
-            case kMpoPresentIds:
-                HandleMpoPresentIds(event);
-                break;
-            case kMmioFlip:
-                HandleImmediateFlip(event);
-                break;
-            case kMmioMpoFlip:
-                HandleImmediateMpoFlip(event);
-                break;
-            default:
-                break;
-        }
-    }
-
-    void HandleQueuePacket(EVENT_RECORD* event) {
-        uint32_t submitSequence = 0;
-        uint32_t isPresent = 0;
-        if (!ReadProperty(event, L"SubmitSequence", submitSequence) ||
-            !ReadProperty(event, L"bPresent", isPresent) || isPresent == 0) {
-            return;
-        }
-        if (!IsTrackedProcess(event->EventHeader.ProcessId))
-            return;
-        bool isFallback = false;
-        if (submissions_.Associate(event->EventHeader.ProcessId, event->EventHeader.ThreadId, submitSequence,
-                                   event->EventHeader.TimeStamp.QuadPart, &isFallback)) {
-            if (isFallback) {
-                if (runtimeIntervalPid_ != event->EventHeader.ProcessId) {
-                    runtimeIntervalPid_ = event->EventHeader.ProcessId;
-                    runtimeIntervals_.StartWindow();
-                }
-                runtimeIntervals_.Observe(
-                    DisplayTimingQpcToUs(event->EventHeader.TimeStamp.QuadPart, qpcFrequency_));
-            }
-        }
-    }
-
-    // Every vertical blank is observed, whether or not it carries a flip of a
-    // tracked process. This is diagnostic only: HSync/VSync flip completions
-    // below keep their original timestamps, including genuine uneven pacing.
-    void HandleVsync(EVENT_RECORD* event) {
-        uint32_t displaySource = 0;
-        if (ReadProperty(event, L"VidPnSourceId", displaySource)) {
-            verticalBlanks_.Observe(displaySource, event->EventHeader.TimeStamp.QuadPart);
-            if (displaySource == verticalBlanks_.busiestSource())
-                blankIntervals_.Observe(DisplayTimingQpcToUs(event->EventHeader.TimeStamp.QuadPart, qpcFrequency_));
-        }
-        uint64_t fenceId = 0;
-        if (!ReadProperty(event, L"FlipFenceId", fenceId) || fenceId == 0)
-            return;
-        PublishForSubmit(static_cast<uint32_t>(fenceId >> 32u), event->EventHeader.TimeStamp.QuadPart,
-                         DisplayCompletionKind::Sync, true, DisplayCompletionSource::VSyncDpc, displaySource);
-    }
-
-    void HandleMpoSync(EVENT_RECORD* event) {
-        uint32_t count = 0;
-        if (!ReadProperty(event, L"FlipEntryCount", count) || count == 0 || count > 64)
-            return;
-        const DisplayCompletionSource source = event->EventHeader.EventDescriptor.Id == kHsyncMpo
-                                                   ? DisplayCompletionSource::HSyncDpcMultiPlane
-                                                   : DisplayCompletionSource::VSyncDpcMultiPlane;
-        uint32_t displaySource = 0;
-        ReadProperty(event, L"VidPnSourceId", displaySource);
-        std::array<uint32_t, 64> publishedPids = {};
-        std::size_t publishedCount = 0;
-        for (uint32_t i = 0; i < count; ++i) {
-            uint64_t encodedSequence = 0;
-            if (!ReadProperty(event, L"FlipSubmitSequence", encodedSequence, i) || encodedSequence == 0)
-                continue;
-            const uint32_t submitSequence = static_cast<uint32_t>(encodedSequence >> 32u);
-            const SubmitAssociation* association =
-                submissions_.FindForCompletion(submitSequence, event->EventHeader.TimeStamp.QuadPart);
-            if (!association)
-                continue;
-            const uint32_t processId = association->processId;
-            if (std::find(publishedPids.begin(), publishedPids.begin() + publishedCount, processId) ==
-                publishedPids.begin() + publishedCount) {
-                QueueTimestamp(processId, association->associationId, event->EventHeader.TimeStamp.QuadPart,
-                               DisplayCompletionKind::Sync, association->presentStartTimestamp, displaySource,
-                               association->syncInterval >= 1);
-                ++completionsBySource_[static_cast<std::size_t>(source)];
-                latchIntervals_.Observe(
-                    DisplayTimingQpcToUs(event->EventHeader.TimeStamp.QuadPart, qpcFrequency_));
-                publishedPids[publishedCount++] = processId;
-            }
-            submissions_.Erase(submitSequence);
-        }
-    }
-
-    void HandleMpoPresentIds(EVENT_RECORD* event) {
-        if (event->EventHeader.EventDescriptor.Version < 8)
-            return;
-        uint32_t displaySource = 0;
-        uint32_t planeCount = 0;
-        uint32_t submitSequence = 0;
-        if (!ReadProperty(event, L"VidPnSourceId", displaySource) ||
-            !ReadProperty(event, L"PlaneCount", planeCount) ||
-            !ReadProperty(event, L"FlipSubmitSequence", submitSequence) || planeCount == 0 || planeCount > 64) {
-            return;
-        }
-        const SubmitAssociation* association =
-            submissions_.FindForCompletion(submitSequence, event->EventHeader.TimeStamp.QuadPart);
-        if (!association)
-            return;
-        for (uint32_t i = 0; i < planeCount; ++i) {
-            uint64_t presentId = 0;
-            uint32_t layer = 0;
-            if (ReadProperty(event, L"PresentId", presentId, i) && ReadProperty(event, L"LayerIndex", layer, i)) {
-                const DisplayLayerPresentKey layerKey = {displaySource, layer, presentId};
-                correlation_.Associate(layerKey, {association->processId, association->associationId,
-                                                  event->EventHeader.TimeStamp.QuadPart,
-                                                  association->presentStartTimestamp});
-                ConsumeCorrelationPayloads();
-            }
-        }
-    }
-
-    void HandleGeneratedFlip(EVENT_RECORD* event) {
-        ++frameTypePayloadReceived_;
-        const uint8_t version = event->EventHeader.EventDescriptor.Version;
-        if (version > 1)
-            return;
-
-        uint32_t displaySource = 0;
-        uint32_t layer = 0;
-        uint64_t presentId = 0;
-        uint8_t frameType = 0;
-        if (!ReadProperty(event, L"VidPnSourceId", displaySource) ||
-            !ReadProperty(event, L"LayerIndex", layer) || !ReadProperty(event, L"PresentId", presentId) ||
-            !ReadProperty(event, L"FrameType", frameType)) {
-            return;
-        }
-
-        uint64_t screenTime = static_cast<uint64_t>(event->EventHeader.TimeStamp.QuadPart);
-        if (version == 1 && !ReadProperty(event, L"TimeStamp", screenTime))
-            return;
-        if (screenTime == 0)
-            return;
-
-        ++frameTypePayloadValid_;
-        const DisplayLayerPresentKey layerKey = {displaySource, layer, presentId};
-        const auto result = correlation_.ObservePayload(
-            layerKey, DisplayPendingFrameTypeFlip{static_cast<int64_t>(screenTime),
-                                                   event->EventHeader.TimeStamp.QuadPart, frameType});
-        ConsumeCorrelationPayloads();
-        if (result == DisplayTimingCorrelation::PayloadResult::Duplicate)
-            ++frameTypePayloadDuplicate_;
-        else if (result == DisplayTimingCorrelation::PayloadResult::Late)
-            ++frameTypePayloadLate_;
-        else if (result == DisplayTimingCorrelation::PayloadResult::Pending)
-            ++frameTypePendingObserved_;
-    }
-
-    void HandleImmediateFlip(EVENT_RECORD* event) {
-        uint32_t submitSequence = 0;
-        uint32_t flags = 0;
-        if (ReadProperty(event, L"FlipSubmitSequence", submitSequence) && ReadProperty(event, L"Flags", flags) &&
-            (flags & 2u) != 0) {
-            PublishForSubmit(submitSequence, event->EventHeader.TimeStamp.QuadPart,
-                             DisplayCompletionKind::Immediate, true, DisplayCompletionSource::ImmediateFlip);
-        }
-    }
-
-    void HandleImmediateMpoFlip(EVENT_RECORD* event) {
-        if (event->EventHeader.EventDescriptor.Version < 2)
-            return;
-        uint64_t encodedSequence = 0;
-        uint32_t status = 0;
-        if (!ReadProperty(event, L"FlipSubmitSequence", encodedSequence) ||
-            !ReadProperty(event, L"FlipEntryStatusAfterFlip", status)) {
-            return;
-        }
-        if (status == kFlipWaitVSync || status == kFlipWaitHSync) {
-            // The matching ?SyncDPC event completes this flip. Its announcement
-            // is still consumed rather than left behind: measured under FSR
-            // frame generation on this hardware it leads this flip event by
-            // about two microseconds, so it says nothing the completion does
-            // not, while an announcement stranded here would later be applied
-            // to an unrelated immediate flip on the same driver thread.
-            nvidiaFlips_.TakeFlipDelay(event->EventHeader.ThreadId);
-            return;
-        }
-        // Consume the announcement on every immediate flip, not only on the ones
-        // that resolve to a tracked process: an announcement left behind by a
-        // flip we do not publish would otherwise be applied to an unrelated
-        // later flip on the same driver thread.
-        const NvidiaFlipDelay announced = nvidiaFlips_.TakeFlipDelay(event->EventHeader.ThreadId);
-        if (announced.matched) {
-            ++nvidiaAnnouncementsApplied_;
-            nvidiaAnnouncedDelayTotal_ += announced.delay;
-            nvidiaAnnouncedDelayMax_ = std::max(nvidiaAnnouncedDelayMax_, announced.delay);
-        }
-        PublishForSubmit(static_cast<uint32_t>(encodedSequence >> 32u),
-                         event->EventHeader.TimeStamp.QuadPart + announced.delay,
-                         DisplayCompletionKind::Immediate, true, DisplayCompletionSource::ImmediateMultiPlaneFlip);
-    }
-
-    void PublishForSubmit(uint32_t submitSequence, int64_t timestamp, DisplayCompletionKind completionKind,
-                          bool erase, DisplayCompletionSource source, uint32_t displaySource = 0) {
-        const SubmitAssociation* association = submissions_.FindForCompletion(submitSequence, timestamp);
-        if (!association)
-            return;
-        QueueTimestamp(association->processId, association->associationId, timestamp, completionKind,
-                       association->presentStartTimestamp, displaySource,
-                       completionKind == DisplayCompletionKind::Sync && association->syncInterval >= 1);
-        ++completionsBySource_[static_cast<std::size_t>(source)];
-        if (erase)
-            submissions_.Erase(submitSequence);
-    }
-
-    void ConsumeCorrelationPayloads() {
-        auto payloads = correlation_.TakePayloads();
-        for (auto& payload : payloads) {
-            pendingTimestamps_.push_back(payload);
-            ++queuedTimestamps_;
-            // This is the single transition point for both delivery orders:
-            // payload-first becomes matched when MPO association consumes it,
-            // while MPO-first reaches here immediately from ObservePayload.
-            ++frameTypeCorrelated_;
-            ++frameTypeAuthoritative_;
-        }
-    }
-
-    void QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
-                        DisplayCompletionKind completionKind, int64_t presentStartTimestamp,
-                        uint32_t displaySource = 0, bool synchronizedFlip = false) {
-        if (timestamp <= 0)
-            return;
-        if (completionKind != DisplayCompletionKind::Unconditional) {
-            // The fallback itself owns the association tombstone.  This makes
-            // a later FrameType telemetry-only even when no payload preceded
-            // the fallback (the 24 ms watermark is a bounded policy, not a
-            // causal/no-late-events guarantee).
-            correlation_.QueueFallback(processId, associationId, timestamp, completionKind,
-                                       pendingTimestamps_, nextTimestampOrder_, presentStartTimestamp,
-                                       displaySource, synchronizedFlip);
-            ++queuedTimestamps_;
-            return;
-        }
-        pendingTimestamps_.push_back({processId, associationId, timestamp, completionKind,
-                                      nextTimestampOrder_++, presentStartTimestamp, displaySource});
-        ++queuedTimestamps_;
-    }
-
-    bool ShouldPublish(const PendingTimestamp& pending) const {
-        return correlation_.ShouldPublish(pending);
-    }
-
-    void SortPending() noexcept {
-        std::sort(pendingTimestamps_.begin(), pendingTimestamps_.end(), [](const auto& a, const auto& b) {
-            return a.timestamp != b.timestamp ? a.timestamp < b.timestamp : a.arrivalOrder < b.arrivalOrder;
-        });
-    }
-
-    void DrainReady(int64_t nowQpc, bool force) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (lastPruneQpc_ == 0 || nowQpc - lastPruneQpc_ >= qpcFrequency_ * 5) {
-            PruneAssociations(nowQpc - qpcFrequency_ * 10);
-            lastPruneQpc_ = nowQpc;
-        }
-        if (nowQpc - lastSubmissionPruneQpc_ >= qpcFrequency_ / 4)
-            PruneSubmissions(nowQpc);
-        if (pendingTimestamps_.empty())
-            return;
-        SortPending();
-        const int64_t cutoff = nowQpc - (kTimestampReorderWindowUs * qpcFrequency_) / 1'000'000;
-        const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
-        std::size_t consumed = 0;
-        for (auto& pending : pendingTimestamps_) {
-            if (!force && pending.timestamp > cutoff)
-                break;
-            if (ShouldPublish(pending)) {
-                PublishPending(pending, publishUs);
-                if (pending.completionKind != DisplayCompletionKind::Unconditional) {
-                    ++fallbackPublished_;
-                    correlation_.CommitFallback(pending);
-                }
-            } else {
-                ++suppressedTimestamps_;
-                if (pending.completionKind != DisplayCompletionKind::Unconditional)
-                    ++fallbackSuppressed_;
-            }
-            ++consumed;
-        }
-        pendingTimestamps_.erase(
-            pendingTimestamps_.begin(),
-            pendingTimestamps_.begin() + static_cast<std::vector<PendingTimestamp>::difference_type>(consumed));
-    }
-
-    // Destruction happens after both ETW workers have stopped.  Do not run the
-    // normal fallback commit path here: CommitFallback may grow an unordered
-    // map and therefore cannot be part of a non-throwing destructor cleanup.
-    void DrainReadyNoexcept(int64_t nowQpc) noexcept {
-        if (pendingTimestamps_.empty())
-            return;
-        SortPending();
-        const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
-        for (const auto& pending : pendingTimestamps_)
-            if (ShouldPublish(pending))
-                PublishPending(pending, publishUs);
-        pendingTimestamps_.clear();
-    }
-
-    // Submissions expire at the completion bound (plus the reorder window a
-    // late-delivered completion may still need), not with the 10 s payload
-    // maps: an entry that outlives its bound can only be claimed wrongly.
-    void PruneSubmissions(int64_t nowQpc) {
-        const int64_t boundQpc =
-            (kMaxSubmitToCompletionUs + kTimestampReorderWindowUs) * qpcFrequency_ / 1'000'000;
-        const uint64_t expired = submissions_.PruneBefore(nowQpc - boundQpc);
-        lastSubmissionPruneQpc_ = nowQpc;
-        LogSubmissionExpiryTransition(
-            expiryMonitor_.Observe(expired, submissions_.matchedCompletions(), GetTickCount64()),
-            submissions_.lastExpiredProcessId(), expired, expiryMonitor_.lastCompleted());
-    }
-
-    void PruneAssociations(int64_t cutoff) {
-        correlation_.Prune(cutoff);
-        nvidiaFlips_.PruneBefore(cutoff);
-    }
-
-    // Source provenance is independent of how even the measured intervals are.
-    static bool IsScreenTime(const PendingTimestamp& pending) {
-        return pending.screenTimeResolved;
-    }
-
-    void PublishPending(const PendingTimestamp& pending, int64_t publishUs) {
-        DisplayTimingPublication sample;
-        sample.processId = pending.processId;
-        sample.timestampQpc = pending.timestamp;
-        sample.presentStartQpc = pending.presentStartTimestamp;
-        sample.screenTimeResolved = IsScreenTime(pending);
-        sample.synchronizedFlip =
-            pending.completionKind == DisplayCompletionKind::Sync && pending.synchronizedFlip;
-        sample.displaySource = pending.displaySource;
-        outputs_.Publish(
-            targets_, sample, publishUs, [this](uint32_t source) { return refreshPeriods_.PeriodUs(source); },
-            [this](uint32_t source, int64_t from, int64_t until) {
-                return verticalBlanks_.FirstBlankInRange(source, from, until);
-            });
-    }
-
-    // Queried outside the lock: QueryDisplayConfig can take a while and the
-    // ETW callback must not wait on it. Logged only when the table changes.
-    void RefreshDisplayPeriods() {
-        const DisplayRefreshPeriods periods = QueryDisplayRefreshPeriods();
-        std::lock_guard<std::mutex> lock(mutex_);
-        lastRefreshQueryTime_ = GetTickCount64();
-        if (refreshPeriodsLogged_ && periods == refreshPeriods_)
-            return;
-        refreshPeriods_ = periods;
-        refreshPeriodsLogged_ = true;
-        LogDisplayRefreshPeriods(periods);
-    }
-
-    // Returns false while the window is not due, so the caller stays a one-liner.
-    bool SnapshotHealth(DisplayTimingHealth& health) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        const uint64_t now = GetTickCount64();
-        if (targets_.empty() || (lastHealthLogTime_ != 0 && now - lastHealthLogTime_ < kHealthLogPeriodMs))
-            return false;
-        const bool firstWindow = lastHealthLogTime_ == 0;
-        lastHealthLogTime_ = now;
-        if (firstWindow)
-            return false;
-        health.presents = submissions_.observedPresents();
-        health.associations = submissions_.observedAssociations();
-        health.expiredAssociations = submissions_.expiredAssociations();
-        health.staleCompletions = submissions_.rejectedStaleCompletions();
-        health.submissionsExpiring = expiryMonitor_.expiring();
-        health.queued = queuedTimestamps_;
-        health.published = outputs_.published();
-        health.suppressed = suppressedTimestamps_;
-        health.regressed = outputs_.regressed();
-        health.payloadReceived = frameTypePayloadReceived_;
-        health.payloadValid = frameTypePayloadValid_;
-        health.payloadCorrelated = frameTypeCorrelated_;
-        health.payloadPending = correlation_.pendingPayloads().size();
-        health.payloadPendingObserved = frameTypePendingObserved_;
-        health.authoritative = frameTypeAuthoritative_;
-        health.payloadDuplicate = frameTypePayloadDuplicate_;
-        health.payloadLate = frameTypePayloadLate_;
-        health.fallbackPublished = fallbackPublished_;
-        health.fallbackSuppressed = fallbackSuppressed_;
-        health.nvReceived = nvidiaAnnouncementsReceived_;
-        health.nvUndecodable = nvidiaAnnouncementsUndecodable_;
-        health.nvApplied = nvidiaAnnouncementsApplied_;
-        health.nvFieldOffset = nvidiaAnnouncements_.located() ? static_cast<int32_t>(nvidiaAnnouncements_.offset())
-                                                              : -1;
-        health.nvFieldAbandoned = nvidiaAnnouncements_.abandoned();
-        health.nvMaxDelayUs = DisplayTimingQpcToUs(nvidiaAnnouncedDelayMax_, qpcFrequency_);
-        if (health.nvApplied != 0) {
-            health.nvAverageDelayUs = DisplayTimingQpcToUs(
-                nvidiaAnnouncedDelayTotal_ / static_cast<int64_t>(health.nvApplied), qpcFrequency_);
-        }
-        health.completions = completionsBySource_;
-        const uint32_t blankSource = verticalBlanks_.busiestSource();
-        health.blankIntervalUs = DisplayTimingQpcToUs(verticalBlanks_.PeriodUs(blankSource), qpcFrequency_);
-        health.blanksObserved = verticalBlanks_.observedBlanks(blankSource);
-        health.blankClockPeriodic = verticalBlanks_.HasPeriodicCadence(blankSource);
-        SetBlankIntervals(health, blankIntervals_);
-        SetLatchIntervals(health, latchIntervals_);
-        SnapshotIntervals(health);
-        return true;
-    }
-
-    void SnapshotIntervals(DisplayTimingHealth& health) {
-        outputs_.Snapshot(health);
-        SetRuntimeIntervals(health, runtimeIntervals_);
-        runtimeIntervals_.StartWindow();
-        blankIntervals_.StartWindow();
-        latchIntervals_.StartWindow();
-    }
-
-    void LogHealthIfDue() {
-        DisplayTimingHealth health;
-        if (SnapshotHealth(health))
-            LogDisplayTimingHealth(health);
-    }
-
-    void FlushLoop() {
-        while (WaitForSingleObject(stopEvent_, kTraceFlushPeriodMs) == WAIT_TIMEOUT) {
-            auto flushProperties = MakeProperties(sessionName_);
-            FlushTraceW(session_, sessionName_, flushProperties.Get());
-            LARGE_INTEGER now = {};
-            QueryPerformanceCounter(&now);
-            DrainReady(now.QuadPart, false);
-            LogHealthIfDue();
-            if (GetTickCount64() - lastRefreshQueryTime_ >= kRefreshPeriodQueryMs)
-                RefreshDisplayPeriods();
-        }
-    }
-
-    void StopTraceSession() {
-        if (session_ != 0) {
-            auto stopProperties = MakeProperties(sessionName_);
-            ControlTraceW(session_, sessionName_, stopProperties.Get(), EVENT_TRACE_CONTROL_STOP);
-            session_ = 0;
-        }
-    }
-
-    void StopNoexcept() noexcept {
-        if (stopEvent_)
-            SetEvent(stopEvent_);
-        if (flushThread_.joinable())
-            flushThread_.join();
+    EVENT_TRACE_LOGFILEW trace = {};
+    trace.LoggerName = sessionName_;
+    trace.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD |
+                             PROCESS_TRACE_MODE_RAW_TIMESTAMP;
+    trace.EventRecordCallback = &EventRecordThunk;
+    trace.BufferCallback = &BufferThunk;
+    trace.Context = this;
+    traceHandle_ = OpenTraceW(&trace);
+    if (traceHandle_ == INVALID_PROCESSTRACE_HANDLE) {
+        SetStartupFailure(GetLastError());
         StopTraceSession();
-        if (processThread_.joinable())
-            processThread_.join();
-        if (traceHandle_ != INVALID_PROCESSTRACE_HANDLE) {
-            CloseTrace(traceHandle_);
-            traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
-        }
-        LARGE_INTEGER now = {};
-        QueryPerformanceCounter(&now);
-        DrainReadyNoexcept(now.QuadPart);
-        if (stopEvent_) {
-            CloseHandle(stopEvent_);
-            stopEvent_ = nullptr;
-        }
-        correlation_.Clear();
-        nvidiaFlips_.Clear();
-        nvidiaAnnouncements_.Reset();
-        verticalBlanks_.Clear();
-        submissions_.Clear();
+        return;
     }
 
-    std::atomic<bool> started_{false};
-    std::atomic<DisplayTimingStatus> startupStatus_{DisplayTimingStatus::Unavailable};
-    TRACEHANDLE session_ = 0;
-    TRACEHANDLE traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
-    HANDLE stopEvent_ = nullptr;
-    wchar_t sessionName_[kTraceSessionNameCapacity] = {};
-    int64_t qpcFrequency_ = 0;
-    int64_t lastPruneQpc_ = 0;
-    int64_t lastSubmissionPruneQpc_ = 0;
-    DisplaySubmissionExpiryMonitor expiryMonitor_;
-    std::thread processThread_;
-    std::thread flushThread_;
+    stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!stopEvent_) {
+        SetStartupFailure(GetLastError());
+        CloseTrace(traceHandle_);
+        traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
+        StopTraceSession();
+        return;
+    }
 
-    std::mutex mutex_;
-    std::vector<DisplayTimingTarget> targets_;
-    DisplaySubmissionTracker submissions_;
-    DisplayTimingCorrelation correlation_;
-    NvidiaFlipAnnouncementDecoder nvidiaAnnouncements_;
-    NvidiaFlipDelayTracker nvidiaFlips_;
-    VerticalBlankClock verticalBlanks_;
-    std::vector<PendingTimestamp> pendingTimestamps_;
-    DisplayTimingOutputs outputs_;
-    DisplayRefreshPeriods refreshPeriods_;
-    uint64_t lastRefreshQueryTime_ = 0;
-    bool refreshPeriodsLogged_ = false;
-    DisplayIntervalStats runtimeIntervals_;
-    uint32_t runtimeIntervalPid_ = 0;
-    DisplayIntervalStats blankIntervals_;
-    DisplayIntervalStats latchIntervals_;
-    uint64_t nextTimestampOrder_ = 1;
-    ULONG observedTraceEventsLost_ = 0;
-    ULONG loggedTraceEventsLost_ = 0;
-    uint64_t lastTraceLossLogTime_ = 0;
-    uint64_t lastHealthLogTime_ = 0;
-    uint64_t queuedTimestamps_ = 0;
-    uint64_t suppressedTimestamps_ = 0;
-    uint64_t frameTypePayloadReceived_ = 0;
-    uint64_t frameTypePayloadValid_ = 0;
-    uint64_t frameTypeCorrelated_ = 0;
-    uint64_t frameTypeAuthoritative_ = 0;
-    uint64_t frameTypePendingObserved_ = 0;
-    uint64_t frameTypePayloadDuplicate_ = 0;
-    uint64_t frameTypePayloadLate_ = 0;
-    uint64_t fallbackPublished_ = 0;
-    uint64_t fallbackSuppressed_ = 0;
-    uint64_t nvidiaAnnouncementsReceived_ = 0;
-    uint64_t nvidiaAnnouncementsUndecodable_ = 0;
-    uint64_t nvidiaAnnouncementsApplied_ = 0;
-    int64_t nvidiaAnnouncedDelayTotal_ = 0;
-    int64_t nvidiaAnnouncedDelayMax_ = 0;
-    std::array<uint64_t, static_cast<std::size_t>(DisplayCompletionSource::Count)> completionsBySource_ = {};
-};
+    startupStatus_.store(DisplayTimingStatus::Starting, std::memory_order_release);
+    processThread_ = std::thread([this] {
+        const ULONG traceStatus = ProcessTrace(&traceHandle_, 1, nullptr, nullptr);
+        // ERROR_CANCELLED is the ordinary result of stopping the session.
+        if (traceStatus != ERROR_SUCCESS && traceStatus != ERROR_CANCELLED) {
+            startupStatus_.store(DisplayTimingStatus::Failed, std::memory_order_release);
+            LogWarn("[DisplayTiming] Event consumption stopped: %lu", traceStatus);
+        }
+    });
+    flushThread_ = std::thread([this] { FlushLoop(); });
+    LogInfo("[DisplayTiming] Screen-change timing service started (flush=%lums reorder=%lldus "
+            "timestampPolicy=event/no-grid graphTime=refresh-bounded)",
+            kTraceFlushPeriodMs, static_cast<long long>(kTimestampReorderWindowUs));
+}
+
+void DisplayTimingService::Impl::UpdateTargets(const std::vector<DisplayTimingTarget>& targets) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    for (const auto& oldTarget : targets_) {
+        const bool retained = std::any_of(targets.begin(), targets.end(), [&](const DisplayTimingTarget& target) {
+            return target.output == oldTarget.output && target.sourcePid == oldTarget.sourcePid &&
+                   target.rendererPid == oldTarget.rendererPid;
+        });
+        if (!retained && oldTarget.output) {
+            oldTarget.output->Reset(0, 0, DisplayTimingStatus::Unavailable);
+            outputs_.Forget(oldTarget.output);
+        }
+    }
+
+    for (const auto& target : targets) {
+        const bool unchanged = std::any_of(targets_.begin(), targets_.end(), [&](const DisplayTimingTarget& old) {
+            return target.output == old.output && target.sourcePid == old.sourcePid &&
+                   target.rendererPid == old.rendererPid;
+        });
+        if (!unchanged && target.output) {
+            target.output->Reset(target.sourcePid, target.rendererPid,
+                                 startupStatus_.load(std::memory_order_acquire));
+            outputs_.Track(target.output);
+        }
+    }
+    targets_ = targets;
+}
+
+ULONG WINAPI DisplayTimingService::Impl::BufferThunk(EVENT_TRACE_LOGFILEW* trace) {
+    auto* self = static_cast<Impl*>(trace->Context);
+    self->ObserveTraceLosses(trace->EventsLost);
+    LARGE_INTEGER now = {};
+    QueryPerformanceCounter(&now);
+    self->DrainReady(now.QuadPart, false);
+    return TRUE;
+}
+
+void DisplayTimingService::Impl::SetStartupFailure(ULONG error) {
+    const DisplayTimingStatus status =
+        error == ERROR_ACCESS_DENIED ? DisplayTimingStatus::AccessDenied : DisplayTimingStatus::Failed;
+    startupStatus_.store(status, std::memory_order_release);
+    ce::display_timing_startup::LogStartupFailure(error);
+}
+
+void DisplayTimingService::Impl::ObserveTraceLosses(ULONG eventsLost) {
+    ULONG loggedTotal = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (eventsLost > observedTraceEventsLost_) {
+            const ULONG newlyLost = eventsLost - observedTraceEventsLost_;
+            observedTraceEventsLost_ = eventsLost;
+            for (const auto& target : targets_) {
+                if (target.output)
+                    target.output->droppedTimestampCount.fetch_add(newlyLost, std::memory_order_relaxed);
+            }
+        }
+        const uint64_t now = GetTickCount64();
+        if (observedTraceEventsLost_ > loggedTraceEventsLost_ &&
+            (lastTraceLossLogTime_ == 0 || now - lastTraceLossLogTime_ >= 10000)) {
+            loggedTraceEventsLost_ = observedTraceEventsLost_;
+            lastTraceLossLogTime_ = now;
+            loggedTotal = loggedTraceEventsLost_;
+        }
+    }
+    if (loggedTotal != 0)
+        LogWarn("[DisplayTiming] Graphics event loss detected: total=%lu", loggedTotal);
+}
+
+void DisplayTimingService::Impl::SortPending() noexcept {
+    std::sort(pendingTimestamps_.begin(), pendingTimestamps_.end(), [](const auto& a, const auto& b) {
+        return a.timestamp != b.timestamp ? a.timestamp < b.timestamp : a.arrivalOrder < b.arrivalOrder;
+    });
+}
+
+void DisplayTimingService::Impl::DrainReady(int64_t nowQpc, bool force) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (lastPruneQpc_ == 0 || nowQpc - lastPruneQpc_ >= qpcFrequency_ * 5) {
+        PruneAssociations(nowQpc - qpcFrequency_ * 10);
+        lastPruneQpc_ = nowQpc;
+    }
+    if (nowQpc - lastSubmissionPruneQpc_ >= qpcFrequency_ / 4)
+        PruneSubmissions(nowQpc);
+    if (pendingTimestamps_.empty())
+        return;
+    SortPending();
+    const int64_t cutoff = nowQpc - (kTimestampReorderWindowUs * qpcFrequency_) / 1'000'000;
+    const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
+    std::size_t consumed = 0;
+    for (auto& pending : pendingTimestamps_) {
+        if (!force && pending.timestamp > cutoff)
+            break;
+        if (ShouldPublish(pending)) {
+            PublishPending(pending, publishUs);
+            if (pending.completionKind != DisplayCompletionKind::Unconditional) {
+                ++fallbackPublished_;
+                correlation_.CommitFallback(pending);
+            }
+        } else {
+            ++suppressedTimestamps_;
+            if (pending.completionKind != DisplayCompletionKind::Unconditional)
+                ++fallbackSuppressed_;
+        }
+        ++consumed;
+    }
+    pendingTimestamps_.erase(
+        pendingTimestamps_.begin(),
+        pendingTimestamps_.begin() + static_cast<std::vector<PendingTimestamp>::difference_type>(consumed));
+}
+
+void DisplayTimingService::Impl::DrainReadyNoexcept(int64_t nowQpc) noexcept {
+    if (pendingTimestamps_.empty())
+        return;
+    SortPending();
+    const int64_t publishUs = DisplayTimingQpcToUs(nowQpc, qpcFrequency_);
+    for (const auto& pending : pendingTimestamps_)
+        if (ShouldPublish(pending))
+            PublishPending(pending, publishUs);
+    pendingTimestamps_.clear();
+}
+
+void DisplayTimingService::Impl::PruneSubmissions(int64_t nowQpc) {
+    const int64_t boundQpc =
+        (kMaxSubmitToCompletionUs + kTimestampReorderWindowUs) * qpcFrequency_ / 1'000'000;
+    const uint64_t expired = submissions_.PruneBefore(nowQpc - boundQpc);
+    composed_.PruneBefore(nowQpc - boundQpc);
+    lastSubmissionPruneQpc_ = nowQpc;
+    // Only the tracked processes' own flips end the composed state; the
+    // compositor's flips are what measure it.
+    const auto transition = expiryMonitor_.Observe(expired, ownCompletions_, GetTickCount64());
+    if (transition == DisplaySubmissionExpiryMonitor::Transition::Started) {
+        const uint32_t processId = submissions_.lastExpiredProcessId();
+        composed_.Begin(processId, FindCompositorProcessId(processId));
+    } else if (transition == DisplaySubmissionExpiryMonitor::Transition::Stopped) {
+        submissions_.EraseProcess(composed_.compositorPid());
+        composed_.End();
+    }
+    LogSubmissionExpiryTransition(transition, submissions_.lastExpiredProcessId(), composed_.compositorPid(),
+                                  expired, expiryMonitor_.lastCompleted());
+}
+
+void DisplayTimingService::Impl::PruneAssociations(int64_t cutoff) {
+    correlation_.Prune(cutoff);
+    nvidiaSchedule_.PruneBefore(cutoff);
+}
+
+bool DisplayTimingService::Impl::IsScreenTime(const PendingTimestamp& pending) {
+    return pending.screenTimeResolved;
+}
+
+void DisplayTimingService::Impl::PublishPending(const PendingTimestamp& pending, int64_t publishUs) {
+    DisplayTimingPublication sample;
+    sample.processId = pending.processId;
+    sample.timestampQpc = pending.timestamp;
+    sample.presentStartQpc = pending.presentStartTimestamp;
+    sample.screenTimeResolved = IsScreenTime(pending);
+    sample.synchronizedFlip =
+        pending.completionKind == DisplayCompletionKind::Sync && pending.synchronizedFlip;
+    sample.displaySource = pending.displaySource;
+    outputs_.Publish(
+        targets_, sample, publishUs, [this](uint32_t source) { return refreshPeriods_.PeriodUs(source); },
+        [this](uint32_t source, int64_t from, int64_t until) {
+            return verticalBlanks_.FirstBlankInRange(source, from, until);
+        });
+}
+
+void DisplayTimingService::Impl::RefreshDisplayPeriods() {
+    const DisplayRefreshPeriods periods = QueryDisplayRefreshPeriods();
+    std::lock_guard<std::mutex> lock(mutex_);
+    lastRefreshQueryTime_ = GetTickCount64();
+    if (refreshPeriodsLogged_ && periods == refreshPeriods_)
+        return;
+    refreshPeriods_ = periods;
+    refreshPeriodsLogged_ = true;
+    LogDisplayRefreshPeriods(periods);
+}
+
+bool DisplayTimingService::Impl::SnapshotHealth(DisplayTimingHealth& health) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const uint64_t now = GetTickCount64();
+    if (targets_.empty() || (lastHealthLogTime_ != 0 && now - lastHealthLogTime_ < kHealthLogPeriodMs))
+        return false;
+    const bool firstWindow = lastHealthLogTime_ == 0;
+    lastHealthLogTime_ = now;
+    if (firstWindow)
+        return false;
+    health.presents = submissions_.observedPresents();
+    health.associations = submissions_.observedAssociations();
+    health.expiredAssociations = submissions_.expiredAssociations();
+    health.staleCompletions = submissions_.rejectedStaleCompletions();
+    health.submissionsExpiring = expiryMonitor_.expiring();
+    health.queued = queuedTimestamps_;
+    health.published = outputs_.published();
+    health.suppressed = suppressedTimestamps_;
+    health.regressed = outputs_.regressed();
+    health.payloadReceived = frameTypePayloadReceived_;
+    health.payloadValid = frameTypePayloadValid_;
+    health.payloadCorrelated = frameTypeCorrelated_;
+    health.payloadPending = correlation_.pendingPayloads().size();
+    health.payloadPendingObserved = frameTypePendingObserved_;
+    health.authoritative = frameTypeAuthoritative_;
+    health.payloadDuplicate = frameTypePayloadDuplicate_;
+    health.payloadLate = frameTypePayloadLate_;
+    health.fallbackPublished = fallbackPublished_;
+    health.fallbackSuppressed = fallbackSuppressed_;
+    SetNvidiaFlipSchedule(health, nvidiaSchedule_, qpcFrequency_);
+    SetComposedPresentation(health, composed_);
+    health.completions = completionsBySource_;
+    const uint32_t blankSource = verticalBlanks_.busiestSource();
+    health.blankIntervalUs = DisplayTimingQpcToUs(verticalBlanks_.PeriodUs(blankSource), qpcFrequency_);
+    health.blanksObserved = verticalBlanks_.observedBlanks(blankSource);
+    health.blankClockPeriodic = verticalBlanks_.HasPeriodicCadence(blankSource);
+    SetBlankIntervals(health, blankIntervals_);
+    SetLatchIntervals(health, latchIntervals_);
+    SnapshotIntervals(health);
+    return true;
+}
+
+void DisplayTimingService::Impl::SnapshotIntervals(DisplayTimingHealth& health) {
+    outputs_.Snapshot(health);
+    SetRuntimeIntervals(health, runtimeIntervals_);
+    runtimeIntervals_.StartWindow();
+    blankIntervals_.StartWindow();
+    latchIntervals_.StartWindow();
+}
+
+void DisplayTimingService::Impl::LogHealthIfDue() {
+    DisplayTimingHealth health;
+    if (SnapshotHealth(health))
+        LogDisplayTimingHealth(health);
+}
+
+void DisplayTimingService::Impl::FlushLoop() {
+    while (WaitForSingleObject(stopEvent_, kTraceFlushPeriodMs) == WAIT_TIMEOUT) {
+        auto flushProperties = MakeProperties(sessionName_);
+        FlushTraceW(session_, sessionName_, flushProperties.Get());
+        LARGE_INTEGER now = {};
+        QueryPerformanceCounter(&now);
+        DrainReady(now.QuadPart, false);
+        LogHealthIfDue();
+        if (GetTickCount64() - lastRefreshQueryTime_ >= kRefreshPeriodQueryMs)
+            RefreshDisplayPeriods();
+    }
+}
+
+void DisplayTimingService::Impl::StopTraceSession() {
+    if (session_ != 0) {
+        auto stopProperties = MakeProperties(sessionName_);
+        ControlTraceW(session_, sessionName_, stopProperties.Get(), EVENT_TRACE_CONTROL_STOP);
+        session_ = 0;
+    }
+}
+
+void DisplayTimingService::Impl::StopNoexcept() noexcept {
+    if (stopEvent_)
+        SetEvent(stopEvent_);
+    if (flushThread_.joinable())
+        flushThread_.join();
+    StopTraceSession();
+    if (processThread_.joinable())
+        processThread_.join();
+    if (traceHandle_ != INVALID_PROCESSTRACE_HANDLE) {
+        CloseTrace(traceHandle_);
+        traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
+    }
+    LARGE_INTEGER now = {};
+    QueryPerformanceCounter(&now);
+    DrainReadyNoexcept(now.QuadPart);
+    if (stopEvent_) {
+        CloseHandle(stopEvent_);
+        stopEvent_ = nullptr;
+    }
+    correlation_.Clear();
+    nvidiaSchedule_.Clear();
+    composed_.End();
+    verticalBlanks_.Clear();
+    submissions_.Clear();
+}
 
 DisplayTimingService::DisplayTimingService() : impl_(std::make_unique<Impl>()) {}
 

@@ -109,6 +109,36 @@ public:
         return &queue.front();
     }
 
+    // Removes exactly that association, and reports whether it was still
+    // waiting: a composed frame is published only if its own flip has not
+    // already completed or expired it.
+    bool EraseAssociation(uint32_t submitSequence, uint64_t associationId) {
+        const auto found = associations_.find(submitSequence);
+        if (found == associations_.end())
+            return false;
+        auto& queue = found->second;
+        for (auto it = queue.begin(); it != queue.end(); ++it) {
+            if (it->associationId != associationId)
+                continue;
+            queue.erase(it);
+            if (queue.empty())
+                associations_.erase(found);
+            return true;
+        }
+        return false;
+    }
+
+    // Drops a process's outstanding submissions without counting them as
+    // expired, for a process that is no longer followed (the compositor).
+    void EraseProcess(uint32_t processId) {
+        for (auto it = associations_.begin(); it != associations_.end();) {
+            auto& queue = it->second;
+            for (auto entry = queue.begin(); entry != queue.end();)
+                entry = entry->processId == processId ? queue.erase(entry) : std::next(entry);
+            it = queue.empty() ? associations_.erase(it) : std::next(it);
+        }
+    }
+
     void Erase(uint32_t submitSequence) {
         const auto association = associations_.find(submitSequence);
         if (association == associations_.end())

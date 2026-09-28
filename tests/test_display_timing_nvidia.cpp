@@ -258,3 +258,19 @@ TEST(DisplayTimingNvidiaTrackerTest, PruneDropsAnnouncementsOlderThanTheCutoff) 
     EXPECT_FALSE(tracker.TakeFlipDelay(kThread).matched);
     EXPECT_TRUE(tracker.TakeFlipDelay(kOtherThread).matched);
 }
+
+TEST(NvidiaFlipScheduleTest, CountsAppliedDelaysOnlyForFlipsThatTakeThem) {
+    NvidiaFlipSchedule schedule;
+    schedule.SetQpcFrequency(10'000'000);
+    // Too short to hold an announcement.
+    const uint32_t shortPayload = 0;
+    schedule.ObserveRequest(7, &shortPayload, sizeof(shortPayload), 1'000'000);
+    EXPECT_EQ(schedule.received(), 1u);
+    EXPECT_EQ(schedule.undecodable(), 1u);
+    // A flip with nothing announced takes no delay and counts nothing.
+    const NvidiaFlipDelay none = schedule.TakeFlipDelay(7);
+    EXPECT_FALSE(none.matched);
+    EXPECT_EQ(schedule.applied(), 0u);
+    schedule.Clear();
+    EXPECT_FALSE(schedule.decoder().located());
+}

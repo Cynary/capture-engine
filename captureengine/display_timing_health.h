@@ -4,8 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../common/display_timing_shared.h"
 #include "../common/logging.h"
+#include "display_timing_composed.h"
 #include "display_timing_intervals.h"
+#include "display_timing_nvidia.h"
 #include "display_timing_submissions.h"
 
 // Which kernel event carried a frame's screen time. Reported per window because
@@ -37,6 +40,15 @@ struct DisplayTimingHealth {
     // DisplaySubmissionExpiryMonitor's state: submissions expire while none
     // completes, so the frames are not reaching the screen as flips at all.
     bool submissionsExpiring = false;
+    // Composed presentation measured through the compositor's flips (see
+    // display_timing_composed.h): the composed process and its compositor
+    // (0 while inactive), surfaces seen ready, frames published at a compositor
+    // flip, and ready frames a newer one replaced before any composition.
+    uint32_t composedPid = 0;
+    uint32_t compositorPid = 0;
+    uint64_t composedReady = 0;
+    uint64_t composedPublished = 0;
+    uint64_t composedSuperseded = 0;
     uint64_t queued = 0;
     uint64_t published = 0;
     uint64_t suppressed = 0;
@@ -153,6 +165,28 @@ inline void SetGraphIntervals(DisplayTimingHealth& health, const DisplayInterval
     health.graphIntervalMaxUs = stats.maxUs();
 }
 
+inline void SetNvidiaFlipSchedule(DisplayTimingHealth& health, const NvidiaFlipSchedule& schedule,
+                                  int64_t qpcFrequency) {
+    health.nvReceived = schedule.received();
+    health.nvUndecodable = schedule.undecodable();
+    health.nvApplied = schedule.applied();
+    health.nvFieldOffset = schedule.decoder().located() ? static_cast<int32_t>(schedule.decoder().offset()) : -1;
+    health.nvFieldAbandoned = schedule.decoder().abandoned();
+    health.nvMaxDelayUs = DisplayTimingQpcToUs(schedule.delayMax(), qpcFrequency);
+    if (health.nvApplied != 0) {
+        health.nvAverageDelayUs =
+            DisplayTimingQpcToUs(schedule.delayTotal() / static_cast<int64_t>(health.nvApplied), qpcFrequency);
+    }
+}
+
+inline void SetComposedPresentation(DisplayTimingHealth& health, const ComposedPresentation& composed) {
+    health.composedPid = composed.processId();
+    health.compositorPid = composed.compositorPid();
+    health.composedReady = composed.readyObserved();
+    health.composedPublished = composed.claimed();
+    health.composedSuperseded = composed.superseded();
+}
+
 inline void SetLatchIntervals(DisplayTimingHealth& health, const DisplayIntervalStats& stats) {
     health.latchIntervalCount = stats.count();
     health.latchIntervalMeanUs = stats.meanUs();
@@ -205,6 +239,7 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
         "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
         "fallback(committed=%llu suppressed=%llu) "
+        "composed(pid=%u compositorPid=%u ready=%llu published=%llu superseded=%llu) "
         "completion(vsyncDpc=%llu vsyncDpcMpo=%llu hsyncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
         "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld "
         "fieldOffset=%d abandoned=%d) "
@@ -221,8 +256,9 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         health.staleCompletions, health.queued, health.published, health.suppressed, health.regressed,
         health.payloadReceived, health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
         health.authoritative, health.payloadDuplicate, health.payloadLate, health.fallbackPublished,
-        health.fallbackSuppressed, health.completions[0], health.completions[1], health.completions[2],
-        health.completions[3], health.completions[4], health.nvReceived, health.nvUndecodable, health.nvApplied,
+        health.fallbackSuppressed, health.composedPid, health.compositorPid, health.composedReady,
+        health.composedPublished, health.composedSuperseded, health.completions[0], health.completions[1],
+        health.completions[2], health.completions[3], health.completions[4], health.nvReceived, health.nvUndecodable, health.nvApplied,
         static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs),
         health.nvFieldOffset, health.nvFieldAbandoned ? 1 : 0, health.blanksObserved,
         static_cast<long long>(health.blankIntervalUs), health.blankClockPeriodic ? 1 : 0, health.blankIntervalCount, static_cast<long long>(health.blankIntervalMeanUs),
@@ -257,17 +293,26 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
 }
 
 // State transitions only; DisplaySubmissionExpiryMonitor rate-limits them.
+// compositorPid is the process whose flips now carry the composed frames, or 0
+// when none could be identified.
 inline void LogSubmissionExpiryTransition(DisplaySubmissionExpiryMonitor::Transition transition,
-                                          uint32_t processId, uint64_t expired, uint64_t completed) {
-    if (transition == DisplaySubmissionExpiryMonitor::Transition::Started) {
+                                          uint32_t processId, uint32_t compositorPid, uint64_t expired,
+                                          uint64_t completed) {
+    if (transition == DisplaySubmissionExpiryMonitor::Transition::Started && compositorPid != 0) {
         LogInfo("[DisplayTiming] Present submissions of PID %u now expire without a flip completion "
+                "(expired=%llu completed=%llu in the last prune): its frames are composed, so their screen times "
+                "now come from the flips of compositor PID %u",
+                processId, static_cast<unsigned long long>(expired), static_cast<unsigned long long>(completed),
+                compositorPid);
+    } else if (transition == DisplaySubmissionExpiryMonitor::Transition::Started) {
+        LogWarn("[DisplayTiming] Present submissions of PID %u now expire without a flip completion "
                 "(expired=%llu completed=%llu in the last prune): its frames no longer reach the screen as flips "
-                "of their own (composed or copied presentation), so no screen-change timestamp is published for "
-                "them and the overlay falls back to presentation timing",
+                "of their own and no compositor process was found, so no screen-change timestamp is published "
+                "for them and the overlay falls back to presentation timing",
                 processId, static_cast<unsigned long long>(expired), static_cast<unsigned long long>(completed));
     } else if (transition == DisplaySubmissionExpiryMonitor::Transition::Stopped) {
         LogInfo("[DisplayTiming] Flip completions resumed for tracked presents (completed=%llu expired=%llu in "
-                "the last prune); screen-change timing is measuring again",
+                "the last prune); screen-change timing follows the process's own flips again",
                 static_cast<unsigned long long>(completed), static_cast<unsigned long long>(expired));
     }
 }
