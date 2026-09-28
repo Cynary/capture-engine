@@ -348,6 +348,23 @@ TEST(DXGISharedTest, WrappedColorSpaceForwardOwnsExactlyOncePublication) {
     EXPECT_FALSE(ce::presentation_color::ShouldRecordDetouredColorSpaceChange(2));
 }
 
+TEST(DXGISharedTest, ResidentColorTrackingSurvivesConsumerDisconnect) {
+    const auto source = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "hook" / "common" / "dxgi_shared_hooks.cpp");
+    const auto begin = source.find("HRESULT STDMETHODCALLTYPE DetourSetColorSpace1(");
+    const auto end = source.find("HRESULT SetSwapChainColorSpaceFromWrapper(", begin);
+    ASSERT_NE(begin, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const auto detour = source.substr(begin, end - begin);
+    // The production detour cannot be linked into the unit executable. Guard
+    // its lifecycle boundary here; live disconnect/toggle/reconnect exercises
+    // the COM private-data storage and the native hook together.
+    EXPECT_EQ(detour.find("HookIsShuttingDown()"), std::string::npos);
+    EXPECT_NE(detour.find("SUCCEEDED(result)"), std::string::npos);
+    EXPECT_NE(detour.find("ShouldRecordDetouredColorSpaceChange"), std::string::npos);
+    EXPECT_NE(detour.find("RecordSwapChainColorSpace"), std::string::npos);
+}
+
 TEST(DXGISharedTest, SwapchainColorSpaceTrackingNeverPatchesSharedVtableSlot) {
     const auto readSource = [](const std::filesystem::path& path) {
         return ce::test_source::ReadLogicalSource(path);

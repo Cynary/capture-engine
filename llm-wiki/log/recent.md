@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-09-28 — HDR metadata across resident-hook dormancy
+
+`DetourSetColorSpace1` rejected metadata publication while `HookIsShuttingDown()` was true, including the normal dormant interval after a consumer disconnect. The wrapper already recorded successful calls in that interval. Removed the inline-only gate; exactly-once wrapper ownership and HRESULT validation remain. Metadata is swapchain private data, independent of capture resources.
+
+Native combined build/unit gate passed. The source lifecycle regression fails with the old shutdown gate restored and passes with it removed. The hook itself is not linked into the unit executable, so the source assertion is supplemented by a live Stellar Blade disconnect → HDR Off/On → reconnect test: all 2,876 frames carried HDR from the first frame. A subsequent loaded-game probe delivered 2,877 HDR final-output frames with 2x DLSS enabled; this verifies metadata/routing, not the pixel correctness of every interpolated frame. Initial late attachment can still miss a colour-space declaration made before injection; that separate limitation remains unresolved.
+
 ### 2026-09-28 — direct-capture reconnect and preserved-swapchain resize
 
 The original hook terminated a standalone D3D11 producer on reconnect. CDB with

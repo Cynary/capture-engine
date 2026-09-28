@@ -136,7 +136,11 @@ HRESULT STDMETHODCALLTYPE DetourSetColorSpace1(IDXGISwapChain* pSwapChain, DXGI_
     }
 
     const HRESULT result = original(pSwapChain, colorSpace);
-    if (!HookIsShuttingDown() && SUCCEEDED(result) &&
+    // Cooperative dejection leaves this detour resident. Keep the swapchain's
+    // private metadata current while no consumer is connected, just as the
+    // wrapper path does. This touches no capture resources and performs no GPU
+    // work; gating it on runtime shutdown makes reconnect reuse stale HDR state.
+    if (SUCCEEDED(result) &&
         ce::presentation_color::ShouldRecordDetouredColorSpaceChange(dxgi_shared_s_wrapperSetColorSpaceForwardDepth)) {
         bool changed = false;
         if (RecordSwapChainColorSpace(pSwapChain, colorSpace, &changed) && changed) {
