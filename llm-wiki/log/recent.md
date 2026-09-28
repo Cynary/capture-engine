@@ -17,9 +17,17 @@
   `common/inject_transport_snapshot.h` hold the single slot rule for producer and media; the layer uses it and logs
   slot/usingEncoderTextures/ready. Tests: `CaptureBaseShmTest.FenceRepublishedAfterResizeReachesTheSlotMediaReads`,
   `FencePublishFollowsEncoderTextureAdoption`.
-- **Open (not changed):** the DXVK late-adoption path (`layer_capture_capture.cpp`, "adopted encoder KMT textures
-  after media startup") flips `useEncoderTextures` to true without publishing a fence into the encoder-texture slot,
-  and after adoption signals the Vulkan shared fence rather than the IPC relay fence. Unverified on hardware.
+- Follow-up (same day, static analysis only, no hardware run): the DXVK late-adoption path in
+  `layer_capture_capture.cpp` flipped `useEncoderTextures` without a fence. The encoder-texture slot still held
+  media's own fence handle (`video_encoder_textures.cpp`, media-process handle, never signaled by anyone), and
+  `ResolveFrameInput`'s encoder-owned branch opens it directly in-process, so every frame would defer at completed
+  value 0. Media clears the flag at every recording stop, so this was the normal DXVK path for any game running
+  before the recording. After adoption the entry has no IPC relay, so frames are signaled on the exported timeline
+  fence (`state.sharedFenceHandle`, `encoderFenceValue == vulkanSignalValue`). Fix: `ce::AdoptEncoderTexturesWithFence`
+  publishes that fence before the flag. Test `LateEncoderTextureAdoptionPublishesTheProducerFence`.
+- **Open:** `RepublishCaptureTransportForHost` after a late adoption publishes the adopted entry's
+  `textureHandles` (all null for encoder-KMT imports) and prefers `ipcFenceHandle`, which is no longer signaled.
+  A replacement media host after adoption therefore likely gets no usable transport. Unverified.
 
 ### 2026-09-27 - Recording-start latency: probe early stop, truthful live timing, WGC reserve-wait finding
 

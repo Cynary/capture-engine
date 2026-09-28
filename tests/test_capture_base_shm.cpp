@@ -197,6 +197,32 @@ TEST(CaptureBaseShmTest, FenceRepublishedAfterResizeReachesTheSlotMediaReads) {
     EXPECT_EQ(shm.encoderTextures.GetFenceHandle(), 0xB0Cu);
 }
 
+// DXVK: the swapchain predates the recording, so the layer starts on its IPC
+// relay (fence in the shared slot). Media then creates its encoder textures and
+// stores its own, never-signaled fence handle in the encoder-texture slot. When
+// the layer adopts those textures, media reads that slot; it must find the
+// layer's timeline fence, not media's handle, or every frame is deferred.
+TEST(CaptureBaseShmTest, LateEncoderTextureAdoptionPublishesTheProducerFence) {
+    SharedMemoryLayout shm{};
+    InitShm(shm);
+    shm.BeginTransportGeneration();
+    ASSERT_FALSE(ce::PublishInjectFenceHandle(shm, 0x2200));
+
+    shm.encoderTextures.SetFenceHandle(0xB0C);
+    shm.encoderTextures.kmtReady.store(true, std::memory_order_release);
+    shm.encoderTextures.ready.store(true, std::memory_order_release);
+
+    const uint32_t adoptedGeneration = static_cast<uint32_t>(shm.BeginTransportGeneration());
+    ce::AdoptEncoderTexturesWithFence(shm, 0x2210);
+
+    ASSERT_TRUE(ce::InjectFenceUsesEncoderTextureSlot(shm));
+    const ce::InjectTransportSnapshot snapshot =
+        ce::ReadInjectTransportSnapshot(shm, 0, ce::InjectFenceUsesEncoderTextureSlot(shm), adoptedGeneration);
+    EXPECT_TRUE(snapshot.consistent);
+    EXPECT_EQ(snapshot.fenceHandle, 0x2210u);
+    EXPECT_EQ(shm.GetFenceShareHandle(), 0x2200u);
+}
+
 TEST(CaptureBaseShmTest, FencePublishFollowsEncoderTextureAdoption) {
     SharedMemoryLayout shm{};
     InitShm(shm);

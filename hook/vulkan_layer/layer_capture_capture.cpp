@@ -1,5 +1,7 @@
 #include "layer_capture_internal.h"
 
+#include "../../common/inject_transport_snapshot.h"
+
 bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,
                   uint32_t swapchainImageIndex, const VkSemaphore* waitSemaphores,
                   uint32_t waitSemaphoreCount, VkSemaphore* signaledSemaphore,
@@ -127,10 +129,21 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
 
             LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, state.captureWidth, state.captureHeight,
                                  VkFormatToDXGI((VkFormat)state.captureFormat));
-            mem->useEncoderTextures.store(true, std::memory_order_release);
+            // The adopted entry has no IPC relay, so frames are now signaled on the
+            // exported timeline fence (encoderFenceValue == vulkanSignalValue), never
+            // on the relay's IPC fence. Publish that fence where media now reads it.
+            ce::AdoptEncoderTexturesWithFence(*mem, reinterpret_cast<uint64_t>(state.sharedFenceHandle));
             state.sharedImageInitialized.fill(false);
             state.relayCompletionValues.fill(0);
-            LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: adopted encoder KMT textures after media startup");
+            static std::atomic<uint64_t> s_lateAdoptionCount{0};
+            const uint64_t adoptionCount = s_lateAdoptionCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (adoptionCount <= 16 || (adoptionCount % 100) == 0) {
+                LayerLog(
+                    "Vulkan Layer: DXVK d3d11 zero-copy: adopted encoder KMT textures after media startup "
+                    "(fence=%p value=%llu relayFence=%p adoptions=%llu)",
+                    state.sharedFenceHandle, static_cast<unsigned long long>(state.currentFenceValue),
+                    state.ipcFenceHandle, static_cast<unsigned long long>(adoptionCount));
+            }
         } else {
             state.nextEncoderImportRetryFrame = state.captureFrameCounter + 60;
         }

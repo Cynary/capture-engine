@@ -46,6 +46,16 @@ inline bool PublishInjectFenceHandle(SharedMemoryLayout& sharedMem, uint64_t fen
     return encoderTextureSlot;
 }
 
+// Switches media to the encoder textures a producer has just adopted. Until
+// then the encoder-texture fence slot holds the handle media stored for itself:
+// a handle value in media's own process that no producer signals. Publish the
+// producer's fence before the flag, so every frame media reads through that
+// slot finds it. The caller begins the transport generation first.
+inline void AdoptEncoderTexturesWithFence(SharedMemoryLayout& sharedMem, uint64_t fenceHandle) {
+    sharedMem.encoderTextures.SetFenceHandle(fenceHandle);
+    sharedMem.useEncoderTextures.store(true, std::memory_order_release);
+}
+
 // Reads the texture/fence handles for one inject frame under the transport
 // generation protocol (see SharedMemoryLayout::BeginTransportGeneration).
 inline InjectTransportSnapshot ReadInjectTransportSnapshot(const SharedMemoryLayout& sharedMem, int textureIndex,
