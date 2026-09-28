@@ -1,5 +1,22 @@
 #include "test_dxgi_shared_shared.h"
 
+TEST(DXGISharedSourceTest, FramePhasesKeepOverlayLockOwnedBySession) {
+    const auto root = std::filesystem::current_path() / "hook" / "apis";
+    const std::string session = ce::test_source::ReadFile(root / "dx12_hook_process_session.h");
+    const std::string phase1 = ce::test_source::ReadFile(root / "dx12_hook_process_session_phase1.cpp");
+    ASSERT_FALSE(session.empty());
+    ASSERT_FALSE(phase1.empty());
+
+    // Phase1 used to shadow the session member with a local unique_lock. That
+    // unlocked before Phase2/capture/drawing, allowing resize cleanup to race
+    // those phases. Phase2's deliberate unlock/relock also used an empty member.
+    EXPECT_NE(session.find("std::unique_lock<std::recursive_mutex> lock;"), std::string::npos);
+    EXPECT_EQ(phase1.find("std::unique_lock<std::recursive_mutex> lock("), std::string::npos);
+    EXPECT_NE(phase1.find("lock = std::unique_lock<std::recursive_mutex>"), std::string::npos);
+    EXPECT_NE(session.find("~FrameProcessSession() { ReleaseBackBuffer(); }"), std::string::npos)
+        << "Release the frame's buffer before destroying its owning mutex lock";
+}
+
 TEST(DXGISharedSourceTest, GuardedSteamRuntimeWorkerRejectionPrecedesEverySteamTouchAndInvoke) {
     namespace fs = std::filesystem;
     const fs::path steamSource = fs::current_path() / "hook" / "common" / "dxgi_shared_steam.cpp";

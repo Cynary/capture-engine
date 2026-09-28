@@ -448,8 +448,9 @@ ProcessFrameFlow FrameProcessSession::Phase1() {
         HookLog("DX12: ProcessFrame - mutex busy, skipping frame");
             return ProcessFrameFlow::kReturn;
     }
-    // RAII unlock when we exit
-    std::unique_lock<std::recursive_mutex> lock(dx12_hook_g_OverlayMutex, std::adopt_lock);
+    // Keep ownership through all frame phases and backbuffer release. A local
+    // lock would unlock here at Phase1's return, before capture and drawing.
+    lock = std::unique_lock<std::recursive_mutex>(dx12_hook_g_OverlayMutex, std::adopt_lock);
 
     // Close the only transition race left by the non-blocking overlay-lock
     // acquisition: an OFF callback may have armed recovery after the first

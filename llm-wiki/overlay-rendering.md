@@ -578,3 +578,20 @@ the random downstream state.
 - DirectDraw no longer has a full-surface overlay transfer or GPU-readback boundary. Recording must still read and convert the presented frame by definition; overlay-only native D3D7 frames require no CPU surface access, and 2D/fallback frames touch only the overlay's exact dirty region.
 - HDR shader/policy regressions are covered offline across DirectX and Vulkan, and both SPIR-V payloads are compiled and validated from their checked-in GLSL sources. The secondary-DX12 contract regression proves all four render sites synchronize HDR/format state, and packed 320-nit Rec.709 green round-trips through the production PQ/Rec.2020 contract without losing chroma. Per the user, fresh visual validation of SDR-R10, scRGB, HDR10/PQ, Streamline UI, and FFX UI/backbuffer routes remains manual; this change did not launch CaptureEngine, games, or interactive test applications.
 - Direct rendering uses the APIs' ordinary source-alpha blend. On PQ targets, fixed-function blending interpolates encoded values rather than absolute luminance, so partially covered antialiasing edge pixels are not mathematically linear-light composites. Opaque overlay pixels have the intended luminance/gamut. Exact destination-aware PQ alpha would require sampling/copying the game backbuffer or a substantially different compositor, which conflicts with the no-full-frame-copy/no-wait performance boundary and is not implemented.
+
+## Frame-processing mutex lifetime (2026-09-28)
+
+`FrameProcessSession::Phase1` must assign its adopted overlay-mutex lock to the
+session's `lock` member. A local variable with that name shadows the member and
+unlocks when Phase1 returns, leaving later capture/draw phases unprotected.
+Phase2's transition cancellation also explicitly unlocks/relocks that member;
+an empty member makes those operations invalid. The session destructor releases
+its backbuffer before member destruction unlocks the mutex.
+
+The regression guard `FramePhasesKeepOverlayLockOwnedBySession` failed on the
+local-shadow version and passes with session ownership. The combined Windows
+build/unit-test gate passed. This establishes the ownership correction; an
+HDR startup and an off → DLSS 2x → off transition passed in a live Stellar Blade
+menu run, with capture continuing through both transitions and clean game exit.
+This is not proof that every intermittent resize failure is resolved. Existing
+resize HRESULT and buffer-descriptor diagnostics remain the runtime evidence.
