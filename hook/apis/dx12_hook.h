@@ -96,6 +96,7 @@ bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapC
 bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source);
 void DX12_HookQueueVTable(ID3D12CommandQueue* queue);
 void DX12_HookDeviceVTable(ID3D12Device* device);
+bool DX12_BeginTrackedSwapchainResize(IDXGISwapChain* swapchain);
 void DX12_OnSwapchainResizeBegin();
 void DX12_OnSwapchainResizeEnd();
 void DX12_InvalidateSwapchain();

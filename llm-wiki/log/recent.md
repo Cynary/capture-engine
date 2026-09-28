@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-09-28 — direct-capture reconnect and preserved-swapchain resize
+
+The original hook terminated a standalone D3D11 producer on reconnect. CDB with
+matching private symbols resolved the abort to assigning over a joinable metrics
+worker thread. The candidate serializes thread ownership and joins the old worker
+before restart, without holding the metrics-data mutex. Combined incremental
+product/native-test gates passed; the live producer survived disconnect/reconnect.
+No isolated thread-lifecycle unit fixture exists yet; preserve the live reconnect
+check as regression evidence rather than claiming unit coverage.
+
+The pinned libvpl 2.17 source incorrectly enables legacy Microsoft CRT shims when
+`_MSC_VER` is undefined under MinGW. The narrow build-policy correction passed ten
+focused shell/policy tests and the actual cold dependency build.
+
+The preserved-swapchain resize candidate runs tracked D3D12 overlay cleanup before
+reconciliation-only resize calls. It does not reset capture transport resources.
+An original-hook HDR startup failed with ResizeBuffers DXGI_ERROR_INVALID_CALL.
+The candidate also failed with DXGI_ERROR_INVALID_CALL: the actual message was
+recovered from its matching dump, rather than inferred from stale Unreal XML.
+The later frame-session mutex fix (dbb5e79) removes a separate resize/capture race.
+With both changes, three fresh Stellar Blade HDR starts and a DLSS 2x on/off
+transition succeeded and exited cleanly. This is bounded startup/lifecycle
+validation, not proof against every intermittent failure. Reconcile-only resize
+now has source regression coverage for tracked ownership, paired cleanup and
+failure diagnostics; live logs establish that the tracked cleanup path ran.
+
+An external consumer also reproduced a fence timeout across resolution changes:
+the producer reused a numeric NT handle for a new fence. The cached old fence
+stopped at 17; reopening the same handle returned a fence already at 33. Consumers
+must compare underlying object identity (or a reliable resource generation), not
+only handle numbers. The producer's outstanding-frame lease contract must remain
+intact through a generation transition.
+
+
 ### 2026-09-21 - CE's own swapchain flag killed Strange Brigade's startup; DX12 sampler overrides reach nothing
 
 Session `20260921_173511`, build 0.1.6757. The game showed
@@ -246,6 +280,7 @@ on the remote release event" that every one of these tests could assert zero on;
 `shared_memory_layout.h` and this suite, so these tests are guarding a path that would have to be
 reintroduced. Worth resolving one way or the other. b53f78f6 did the same conversion for
 `SmartWait_Accuracy` and is the pattern to follow.
+
 
 ## 2026-09-28 — measured capture clock alongside presentation schedule
 

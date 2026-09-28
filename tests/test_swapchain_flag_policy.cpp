@@ -253,3 +253,31 @@ TEST(SwapchainFlagPolicySourceTest, SamplerOverridesHookEveryDiscoveredD3D12Devi
 }
 
 }  // namespace
+
+TEST(SwapchainFlagPolicySourceTest, ReconcileOnlyResizeReleasesTrackedBuffersAndBalancesCleanup) {
+    const std::string source = ReadSource("hook/common/dxgi_shared_resize.cpp");
+    for (const char* name : {"DetourResizeBuffersReconcileOnly", "DetourResizeBuffers1ReconcileOnly"}) {
+        const size_t start = source.find(name);
+        ASSERT_NE(start, std::string::npos);
+        const size_t end = source.find("\n}\n", start);
+        ASSERT_NE(end, std::string::npos);
+        const std::string body = source.substr(start, end - start);
+        const size_t begin = body.find("DX12_BeginTrackedSwapchainResize(pSwapChain)");
+        const size_t forward = body.find("const HRESULT result =");
+        ASSERT_NE(begin, std::string::npos);
+        ASSERT_NE(forward, std::string::npos);
+        EXPECT_LT(begin, forward);
+        EXPECT_NE(body.find("ce::make_scope_guard"), std::string::npos);
+        EXPECT_NE(body.find("if (releaseTrackedBuffers)"), std::string::npos);
+        EXPECT_NE(body.find("DX12_OnSwapchainResizeEnd()"), std::string::npos);
+        EXPECT_NE(body.find("LogResizeFailure"), std::string::npos);
+    }
+    const std::string overlay = ReadSource("hook/apis/dx12_hook_overlay_present.cpp");
+    const size_t start = overlay.find("bool DX12_BeginTrackedSwapchainResize");
+    ASSERT_NE(start, std::string::npos);
+    const std::string body = overlay.substr(start, overlay.find("\n}\n", start) - start);
+    EXPECT_NE(body.find("std::lock_guard<std::recursive_mutex> lock"), std::string::npos);
+    EXPECT_NE(body.find("dx12_hook_g_LastSwapChain != swapchain"), std::string::npos);
+    EXPECT_NE(body.find("dx12_hook_g_InSwapchainResizeCleanup.load"), std::string::npos);
+    EXPECT_NE(body.find("DX12_OnSwapchainResizeBegin()"), std::string::npos);
+}

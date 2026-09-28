@@ -11,6 +11,7 @@ Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Reconnecting capture could terminate the game:** the metrics worker could finish after disconnect while its thread object remained joinable. Thread restart now joins the old worker and serializes ownership before starting its replacement.
 
+- **D3D12 HDR/resolution changes with a preserved swapchain:** release tracked overlay buffer references before forwarding reconciliation-only resize calls, and log the descriptor and HRESULT when resizing fails. Startup reliability remains under investigation.
 
 - **Cold builds with current MinGW headers:** restrict libvpl 2.17's legacy CRT shims to old Microsoft compilers, preventing a Windows-header compilation error under Clang/MinGW.
 

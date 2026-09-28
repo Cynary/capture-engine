@@ -1,6 +1,21 @@
 #include "dx12_hook_internal.h"
 
 
+// A preserved-identity swapchain can still have CE GPU work referring to its
+// buffers. Reconciliation-only resize hooks must release that work too, but
+// must not tear down the active game's state for an unrelated swapchain.
+bool DX12_BeginTrackedSwapchainResize(IDXGISwapChain* swapchain) {
+    std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_OverlayMutex);
+    if (!swapchain || dx12_hook_g_LastSwapChain != swapchain ||
+        dx12_hook_g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
+        return false;
+    }
+    HookLogImportant("DX12: Releasing tracked buffer references before preserved-identity resize (sc=%p)",
+                     swapchain);
+    DX12_OnSwapchainResizeBegin();
+    return true;
+}
+
 void DX12_OnSwapchainResizeBegin() {
     bool wasAlreadySet = dx12_hook_g_InSwapchainResizeCleanup.exchange(true);
     HookLog("DX12: DX12_OnSwapchainResizeBegin called, wasAlreadySet=%d", wasAlreadySet);

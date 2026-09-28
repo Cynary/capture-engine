@@ -1,9 +1,31 @@
 #include "dxgi_shared_internal.h"
 #include "present_pacing_policy.h"
 #include "swapchain_flag_policy.h"
+#include "dx12_dred.h"
 
 namespace DXGIShared {
 namespace {
+
+// Resize failures are rare and otherwise opaque: record the actual descriptor
+// alongside the forwarded arguments before the application terminates.
+void LogResizeFailure(IDXGISwapChain* swapchain, const DXGI_SWAP_CHAIN_DESC& before,
+                      HRESULT descriptorResult, UINT count, UINT width, UINT height,
+                      DXGI_FORMAT format, UINT flags, HRESULT result, const char* source) {
+    if (SUCCEEDED(result)) {
+        return;
+    }
+    HookLogImportant(
+        "%s failed hr=0x%08X sc=%p descHr=0x%08X before=%ux%u count=%u format=%u flags=0x%X "
+        "effect=%u windowed=%d requested=%ux%u count=%u format=%u flags=0x%X",
+        source, result, swapchain, descriptorResult, before.BufferDesc.Width, before.BufferDesc.Height,
+        before.BufferCount, before.BufferDesc.Format, before.Flags, before.SwapEffect, before.Windowed,
+        width, height, count, format, flags);
+    ID3D12Device* device = nullptr;
+    if (SUCCEEDED(swapchain->GetDevice(IID_PPV_ARGS(&device)))) {
+        ce::dx12_dred::DrainDebugLayerMessages(device, source);
+        device->Release();
+    }
+}
 
 // The application resize contract, in one place for ResizeBuffers and
 // ResizeBuffers1.
@@ -74,10 +96,8 @@ void ReconcileApplicationResizeRequest(IDXGISwapChain* pSwapChain, UINT& BufferC
 }  // namespace
 
 // Predecessors of the reconcile-only ResizeBuffers claim. Kept separate from the
-// full DX11 resize detour: the only thing CE owes an application swapchain it
-// otherwise leaves alone is that the flags it added at creation stay invisible,
-// and running the whole resize pipeline for that would change behaviour far
-// beyond the fix.
+// full DX11 resize detour. Preserve application flags and release any tracked
+// D3D12 buffer references, without running the unrelated DX11 resize pipeline.
 PFN_ResizeBuffers dxgi_shared_oResizeBuffersReconcile = nullptr;
 PFN_ResizeBuffers1 dxgi_shared_oResizeBuffers1Reconcile = nullptr;
 
@@ -89,7 +109,20 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwap
     if (!IsShuttingDown()) {
         ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers");
     }
-    return dxgi_shared_oResizeBuffersReconcile(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    const bool releaseTrackedBuffers = !IsShuttingDown() && !IsVulkanActive() &&
+                                       DX12_BeginTrackedSwapchainResize(pSwapChain);
+    auto resizeGuard = ce::make_scope_guard([&] {
+        if (releaseTrackedBuffers) {
+            DX12_OnSwapchainResizeEnd();
+        }
+    });
+    DXGI_SWAP_CHAIN_DESC before{};
+    const HRESULT descriptorResult = pSwapChain->GetDesc(&before);
+    const HRESULT result = dxgi_shared_oResizeBuffersReconcile(pSwapChain, BufferCount, Width, Height,
+                                                             NewFormat, SwapChainFlags);
+    LogResizeFailure(pSwapChain, before, descriptorResult, BufferCount, Width, Height, NewFormat,
+                     SwapChainFlags, result, "ResizeBuffersReconcile");
+    return result;
 }
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,
@@ -102,8 +135,20 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwa
     if (!IsShuttingDown()) {
         ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers1");
     }
-    return dxgi_shared_oResizeBuffers1Reconcile(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags,
-                                                pCreationNodeMask, ppPresentQueue);
+    const bool releaseTrackedBuffers = !IsShuttingDown() && !IsVulkanActive() &&
+                                       DX12_BeginTrackedSwapchainResize(pSwapChain);
+    auto resizeGuard = ce::make_scope_guard([&] {
+        if (releaseTrackedBuffers) {
+            DX12_OnSwapchainResizeEnd();
+        }
+    });
+    DXGI_SWAP_CHAIN_DESC before{};
+    const HRESULT descriptorResult = pSwapChain->GetDesc(&before);
+    const HRESULT result = dxgi_shared_oResizeBuffers1Reconcile(pSwapChain, BufferCount, Width, Height, NewFormat,
+                                                              SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+    LogResizeFailure(pSwapChain, before, descriptorResult, BufferCount, Width, Height, NewFormat,
+                     SwapChainFlags, result, "ResizeBuffers1Reconcile");
+    return result;
 }
 
 }  // namespace DXGIShared

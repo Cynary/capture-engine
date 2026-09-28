@@ -112,6 +112,7 @@ bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain*, const
 bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain*, const char*) {
     return false;
 }
+bool DX12_BeginTrackedSwapchainResize(IDXGISwapChain*) { return false; }
 void DX12_OnSwapchainResizeBegin() {}
 void DX12_OnSwapchainResizeEnd() {}
 void DX12_SignalFSR4SwapchainRecreated() {}
