@@ -246,3 +246,17 @@ on the remote release event" that every one of these tests could assert zero on;
 `shared_memory_layout.h` and this suite, so these tests are guarding a path that would have to be
 reintroduced. Worth resolving one way or the other. b53f78f6 did the same conversion for
 `SmartWait_Accuracy` and is the pattern to follow.
+
+## 2026-09-28 — measured capture clock alongside presentation schedule
+
+Shared-memory ABI 63 adds FrameSlot.captureObservedQpc. DX12/Vulkan final-output
+plans sample the actual callback QPC separately from the existing virtual
+presentation clock. Producers propagate this measurement; ordinary capture uses
+its existing measured timestamp, and a generated output lacking the measurement
+returns zero. This avoids pretending recording schedule timestamps are measured
+capture times. Pacing and recording timestamps remain unchanged. A matching
+streaming helper can now trace callback-to-ready-to-publish without subtracting
+a future synthetic timestamp. Windows clean product/unit/Python gate passed. Live DX12 FG capture produced
+11,410 measured frames with no clock-order violations, including 3,828 final
+outputs. Steady menu callback-to-helper-publish mean/p99 0.560/0.662 ms; the
+separate virtual schedule led the callback by 33.6 ms. Not a gameplay benchmark.
