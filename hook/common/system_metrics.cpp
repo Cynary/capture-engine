@@ -238,6 +238,7 @@ SystemMetricsCollector::~SystemMetricsCollector() {
 }
 
 void SystemMetricsCollector::Shutdown() {
+    std::lock_guard<std::mutex> lifecycleLock(threadMutex);
     stopThread = true;
 
     // Wait for thread to exit with a timeout
@@ -282,20 +283,35 @@ void SystemMetricsCollector::InitPDH() {
     }
 }
 
+void SystemMetricsCollector::EnsureBackgroundThread() {
+    std::lock_guard<std::mutex> lifecycleLock(threadMutex);
+    if (threadRunning.load(std::memory_order_acquire))
+        return;
+
+    // A worker that stopped when the host disconnected is still joinable.
+    // Assigning another std::thread over it would terminate the game.
+    // Do not hold the metrics mutex while waiting for the old worker.
+    if (updateThread.joinable()) {
+        updateThread.join();
+        EarlyLog("SystemMetricsCollector: Joined previous worker before restart");
+    }
+    stopThread.store(false, std::memory_order_release);
+    threadRunning.store(true, std::memory_order_release);
+    try {
+        updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
+    } catch (...) {
+        threadRunning.store(false, std::memory_order_release);
+        EarlyLog("SystemMetricsCollector: Failed to start background thread");
+    }
+}
+
 void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
     {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::unique_lock<std::mutex> lock(mutex);
 
-        // If LUID matches, just ensure thread is running
         if (adapterLuid.LowPart == (DWORD)luidLow && adapterLuid.HighPart == (LONG)luidHigh) {
-            if (!threadRunning) {
-                EarlyLog(
-                    "SystemMetricsCollector: LUID matches but thread not running. "
-                    "Starting...");
-                stopThread = false;
-                updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
-                threadRunning = true;
-            }
+            lock.unlock();
+            EnsureBackgroundThread();
             return;
         }
 
@@ -342,19 +358,7 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
              threadRunning.load());
     DetectHardwareNames();
 
-    if (!threadRunning) {
-        EarlyLog("SystemMetricsCollector: Starting Background Thread...");
-        try {
-            stopThread = false;
-            updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
-            threadRunning = true;
-            EarlyLog("SystemMetricsCollector: Background Thread started successfully.");
-        } catch (...) {
-            EarlyLog(
-                "SystemMetricsCollector: Failed to start background thread "
-                "(Exception)!");
-        }
-    }
+    EnsureBackgroundThread();
 }
 
 bool SystemMetricsCollector::UpdateFromHost() {

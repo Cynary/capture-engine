@@ -80,8 +80,11 @@ private:
     void UpdateVRAMTotal();
     bool UpdateFromHost();
     void BackgroundUpdateLoop();
+    void EnsureBackgroundThread();
 
     // Threading
+    // Serializes thread ownership; the worker never takes this mutex.
+    std::mutex threadMutex;
     std::thread updateThread;
     std::atomic<bool> stopThread{false};
     std::atomic<bool> threadRunning{false};

@@ -396,6 +396,26 @@ class DependencyBuildPolicyShellTest(unittest.TestCase):
             self.assertIn("PKGNAME:mingw-w64-clang-x86_64-opus\n", result.stdout)
             self.assertNotIn("BUILD_DEFINED", result.stdout)
 
+    def test_libvpl_crt_shims_are_only_for_old_msvc(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            recipe = RECIPE_TEMPLATE.replace('pkgver=1.6.1', 'pkgver=2.17.0')
+            recipe = recipe.replace('_realname=opus', '_realname=libvpl')
+            # Preserve the fixture's package wrappers; only source identity varies.
+            recipe = recipe.replace('${MINGW_PACKAGE_PREFIX}-${_realname}', '${MINGW_PACKAGE_PREFIX}-opus')
+            self._write_recipe(directory, ["mingw-w64-clang-x86_64-opus"], recipe=recipe)
+            header = directory / "src/libvpl-2.17.0/libvpl/src/windows/mfx_dispatcher_defs.h"
+            header.parent.mkdir(parents=True)
+            header.write_text("#if _MSC_VER < 1400\n#define shim old_crt\n#endif\n", encoding="utf-8", newline="\n")
+            result = self._run_recipe(directory)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("UPSTREAM_BUILD_RAN", result.stdout)
+            self.assertEqual(header.read_text(), "#if defined(_MSC_VER) && _MSC_VER < 1400\n#define shim old_crt\n#endif\n")
+            header.write_text("#if unexpected_condition\n#endif\n", encoding="utf-8", newline="\n")
+            result = self._run_recipe(directory)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("UPSTREAM_BUILD_RAN", result.stdout)
+
     def test_generated_policy_is_syntactically_valid_shell(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir)

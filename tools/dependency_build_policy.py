@@ -142,11 +142,25 @@ _captureproject_restrict_documentation_output() {
   done < <(find "${srcdir}" -type f \\( @DOXYGEN_CONFIG_TESTS@ \\) -print0)
 }
 
+# libvpl 2.17 tests an undefined _MSC_VER as zero under MinGW, enabling
+# obsolete CRT macros that corrupt declarations in current Windows headers.
+# Limit those shims to the old Microsoft compilers they were written for.
+_captureproject_fix_libvpl_crt_guard() {
+  [[ ${_realname:-} == libvpl && ${pkgver:-} == 2.17.0 ]] || return 0
+  local header="${srcdir}/libvpl-${pkgver}/libvpl/src/windows/mfx_dispatcher_defs.h"
+  if ! grep -qx '#if _MSC_VER < 1400' "$header"; then
+    echo 'Unexpected libvpl CRT guard; refusing to patch unknown source' >&2
+    return 1
+  fi
+  sed -i 's/^#if _MSC_VER < 1400$/#if defined(_MSC_VER) \\&\\& _MSC_VER < 1400/' "$header"
+}
+
 _captureproject_upstream_build="$(declare -f build)"
 if [[ -n ${_captureproject_upstream_build} ]]; then
   eval "${_captureproject_upstream_build/#build/_captureproject_upstream_build_function}"
   build() {
     _captureproject_restrict_documentation_output
+    _captureproject_fix_libvpl_crt_guard || return $?
     _captureproject_upstream_build_function
   }
 fi

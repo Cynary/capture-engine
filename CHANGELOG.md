@@ -6,6 +6,11 @@ Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Reconnecting capture could terminate the game:** the metrics worker could finish after disconnect while its thread object remained joinable. Thread restart now joins the old worker and serializes ownership before starting its replacement.
+
+
+- **Cold builds with current MinGW headers:** restrict libvpl 2.17's legacy CRT shims to old Microsoft compilers, preventing a Windows-header compilation error under Clang/MinGW.
+
 - **Games failed to start with a driver error when `backbuffer_count` was set:** Strange Brigade (DX12) aborted during startup with "Can't recover from driver error. Error Code 80070057" and never rendered a frame. `backbuffer_count` adds a frame-latency waitable object to the swap chain, which DirectX requires the game to repeat on every buffer resize; the correction that hid it from the game was skipped whenever another overlay (for example Steam) owned the present entry, so the game's own resize was rejected. The flag is now hidden consistently on every path, and it is only requested when that correction is guaranteed to exist.
 
 - **Anisotropic filtering and mip bias silently did nothing in DirectX 12 games:** forced AF and negative mip bias never reached titles that resolved Direct3D 12 before CaptureEngine attached, because the sampler and root-signature overrides were installed only when CaptureEngine observed device creation itself. They are now installed during injection setup, which covers devices the game had already created. A session that still reaches no sampler now says so explicitly in the log instead of failing silently.
