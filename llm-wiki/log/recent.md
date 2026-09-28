@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-09-28 — late D3D12/Streamline attachment review
+
+Three separate startup gaps were repaired. `dx12_hook_present_queue_recovery.cpp` fills only a missing queue association from a DIRECT queue submitted by dxgi.dll inside this thread’s Present scope, excluding CE-owned submissions and requiring matching devices. `ProcessFrame` defers until that association exists: the earlier candidate submitted against a guessed application queue before the native Present and hit device-removal 0x887A002B. Known queue associations are never replaced by this recovery. Two source-wiring tests protect the bootstrap order and evidence checks because the injected hook is not linked into unit_tests; real late-attachment runs cover GPU behavior.
+
+`Present1` now independently retries transient deep-hook failures, matching Present’s four-attempt policy. A real run observed three unstable-thread-snapshot refusals then success. The focused source regression fails with the previous one-shot installation restored and passes with the retry. It supplements existing quiescence policy tests rather than emulating live thread suspension.
+
+NGX cache paths are canonicalized using the existing provided-DLL-name parser, both for feature discovery/pinning and loader-unload notification. Module addresses are still pinned and unload generations checked; no filename hash, version or game is hardcoded. Status-only DLSS replies can recover missed activation only with successful status, a nonzero completion fence, runtime-fence evidence, and 2–6 actual presents within capability. Explicit options and protected transitions retain precedence. Five focused policy tests cover discovery/rejection and activation boundaries.
+
+Combined candidates passed fresh/late HDR gameplay and a complete HEVC 4:4:4 10-bit PQ stream with 2x DLSS, including resident reconnect and game exit back to WGC. Distinct decoded images establish changing video; controlled moving-pattern tests remain the evidence for intermediate interpolation. The bridge’s automatic-selection guard for already-running unhooked games remains enabled pending wider lifecycle validation. No safety claim is made for arbitrary overlays or drivers.
+
 ### 2026-09-28 — initial DXGI colour-space recovery
 
 `dxgi_swapchain_color_query.h` queries the private Windows inspection IID also used by ReShade. It reads `GetColorSpace1` only after a successful `QueryInterface`, validates the enum, releases the interface, and leaves the caller’s output unchanged on failure. No object offsets or DLL addresses are embedded. `DXGIShared::QuerySwapChainColorSpace` prefers successful setter tracking and uses this query only when that tracking is unavailable. Queried reads are not cached: doing so could overwrite a newer concurrent setter. `RecordSwapChainColorSpace` compares only recorded private data so a successful setter still publishes even if the native getter already reports the new value. Diagnostics are bounded to five initial queries per process.

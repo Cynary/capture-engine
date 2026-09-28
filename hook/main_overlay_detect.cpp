@@ -104,8 +104,25 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     // invalidated here (loader-safe: interlocked/atomic writes + light logging),
     // or the next reload can land a different sl.* module inside the old range
     // and stale trampolines jump mid-instruction into it (20260612_003407).
-    if (ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(base)) {
-      StreamlineHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
+    // The notification retains the full path even after the image is unmapped.
+    // NGX plugins have hashed basenames, so GetModuleHandle/base-name lookup cannot identify them.
+    char unloadedPath[1024] = {};
+    if (data->FullDllName && data->FullDllName->Buffer) {
+      const size_t chars = data->FullDllName->Length / sizeof(wchar_t);
+      if (chars < sizeof(unloadedPath)) {
+        for (size_t i = 0; i < chars; ++i) {
+          const wchar_t c = data->FullDllName->Buffer[i];
+          unloadedPath[i] = (c > 0 && c < 128) ? static_cast<char>(c) : '?';
+        }
+      }
+    }
+    char providedName[128] = {};
+    const char* identity = base;
+    if (ce::graphics_runtime::ResolveStreamlineProvidedDllName(
+            unloadedPath, providedName, sizeof(providedName)))
+      identity = providedName;
+    if (ce::streamline_runtime_policy::ShouldInvalidateStreamlineHooksOnModuleUnload(identity)) {
+      StreamlineHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, identity);
     }
     RemixHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
   }

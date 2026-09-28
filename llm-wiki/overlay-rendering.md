@@ -611,3 +611,25 @@ A native swapchain test and late attachment to real HDR gameplay verified the
 query; subsequent DLSS capture retained HDR final-output metadata. The private
 interface is not a public SDK guarantee. Encoded generated-frame pixel validation
 is a separate integration requirement.
+
+## Late D3D12 queue bootstrap (2026-09-28)
+
+`dx12_hook_process_session.cpp` must not initialize capture from a guessed queue
+when `g_SwapchainQueue` is absent. Native Present must run first.
+`dx12_hook_present_queue_recovery.cpp`, called by the ECL detour, accepts only
+native DXGI DIRECT submissions inside the current thread’s Present scope,
+with matching devices and no CE-owned submission recursion. It rechecks the
+missing association under `g_CommandQueueMutex` before publishing. Existing
+associations and later FG ownership rules retain precedence.
+
+`DX12PresentQueueRecovery` guards source wiring; live late-attachment tests cover
+GPU execution. Bounded pending logs distinguish missing queue evidence from a
+hung capture consumer. An earlier candidate initialized against an unrelated
+application queue and caused device removal, so do not relax these checks.
+
+The independent Present1 deep-body install retries the same transient failures
+as Present; it does not inherit the result of Present’s installation attempt.
+Streamline discovery includes NGX-provided plugin names, retaining module pins
+and unload-generation checks. Runtime capability alone does not establish FG:
+status-only activation also needs successful completion-fence and multiple-present
+evidence. See `streamline_runtime_policy.h` and its late-runtime/NGX tests.

@@ -34,7 +34,8 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
         state.numFramesToGenerateMax > 0 ? state.numFramesToGenerateMax : GetCachedCapabilityMax(viewportKey);
     const auto runtimeEvaluation = ce::streamline_runtime_policy::EvaluateViewportRuntimeUpdateFromGetState(
         result == streamline_hook_kSlResultOk, streamline_hook_options != nullptr, viewportWasActive, hasRuntimeFenceEvidence, suppressNewActivation,
-        streamline_hook_options ? streamline_hook_options->mode : 0, streamline_hook_options ? streamline_hook_options->numFramesToGenerate : 0u, capabilityMax);
+        streamline_hook_options ? streamline_hook_options->mode : 0, streamline_hook_options ? streamline_hook_options->numFramesToGenerate : 0u, capabilityMax,
+        state.numFramesActuallyPresented, state.status, state.lastPresentInputsProcessingCompletionFenceValue);
     const bool clearAllViewportStatesForDisable =
         runtimeEvaluation.update.shouldUpdate &&
         ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(

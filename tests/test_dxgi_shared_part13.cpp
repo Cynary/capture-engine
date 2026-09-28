@@ -333,6 +333,22 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
     // has no chain to damage, so the ordinary prepend is correct there.
     EXPECT_NE(install.find("InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1", helper),
               std::string::npos);
+    // Present's retry loop does not protect Present1: its independent transaction
+    // can encounter a fresh thread-creation burst after Present succeeded.
+    const size_t present1Begin = install.find("void* deepPresent1Body = nullptr;", helper);
+    ASSERT_NE(present1Begin, std::string::npos);
+    const size_t present1End = install.find("if (deepPresent1Body)", present1Begin);
+    ASSERT_NE(present1End, std::string::npos);
+    const std::string present1Attempt = install.substr(present1Begin, present1End - present1Begin);
+    EXPECT_NE(present1Attempt.find("attempt <= kDeepPresentBodyInstallAttempts"), std::string::npos);
+    EXPECT_NE(present1Attempt.find("UnstableSnapshotPolicy::kAcceptSuspendedSet"), std::string::npos);
+    const size_t present1Failure = install.find("const auto failure =", present1End);
+    const size_t present1Success = install.find("if (deepPresent1Body)", present1End + 1);
+    ASSERT_NE(present1Failure, std::string::npos);
+    ASSERT_NE(present1Success, std::string::npos);
+    const auto failureHandling = install.substr(present1Failure, present1Success - present1Failure);
+    EXPECT_NE(failureHandling.find("IsRetryableQuiesceFailure(failure)"), std::string::npos);
+    EXPECT_NE(failureHandling.find("break;"), std::string::npos);
     // Both entries carry the observed patch span, so a momentarily restored entry cannot make
     // the body hook refuse (session 20260812_150918: Present refused on byte=0x48 milliseconds
     // after the caller logged the E9, and Present is the entry the game actually uses).

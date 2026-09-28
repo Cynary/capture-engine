@@ -11,6 +11,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture, bool applicat
         }
             return;
     }
+    // Late injection can discover an application/compute queue before seeing
+    // the swapchain's own queue. Touching its backbuffer on that guess removes
+    // the device. Let native Present run and recover the association first.
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        if (!dx12_hook_g_SwapchainQueue) {
+            static std::atomic<uint32_t> pending{0};
+            const auto count = pending.fetch_add(1, std::memory_order_relaxed);
+            if (count < 4 || count % 300 == 0)
+                HookLogImportant("DX12: Deferring initial backbuffer work until its presentation queue is known "
+                                 "(swapchain=%p pending=%u)", pSwapChain, count + 1);
+            return;
+        }
+    }
     s_inProcessFrame = true;
     auto reentryGuard = ce::make_scope_guard([&]() { s_inProcessFrame = false; });
     dx12_hook_g_LastProcessFrameTickMs.store(GetTickCount64(), std::memory_order_release);

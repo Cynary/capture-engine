@@ -7,6 +7,8 @@
 #include "dx12_hook_ecl_forward.h"
 #include "dx12_hook_ecl_shared.h"
 
+void DX12_TryRecoverPresentQueue(ID3D12CommandQueue* queue, const void* caller);
+
 // Submissions whose queue the frame-generation fast path did not recognise, and which
 // therefore re-ran queue registration. Reported once per second next to ECL timing.
 static std::atomic<uint32_t> g_EclQueueRegistrationsThisWindow{0};
@@ -105,6 +107,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // Frame generation multiplies submissions per frame, so this hook is on a
     // hotter path than the present hook is.
     ScopedHookCpuCost eclCpuCost(HookExecuteCommandListsCpuCost());
+    DX12_TryRecoverPresentQueue(pThis, __builtin_return_address(0));
 
     if (Dx12TraceEnabled()) {
         static std::atomic<int> s_traceEclN{0};

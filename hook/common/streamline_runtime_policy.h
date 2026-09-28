@@ -5,6 +5,7 @@
 
 #include "../../common/shared_defs.h"
 #include "fg_runtime_state.h"
+#include "graphics_runtime_module_policy.h"
 #include "dlssg_health_policy.h"
 #include "streamline_feature_retry_policy.h"
 
@@ -179,7 +180,10 @@ inline const char* PathBaseName(const char* moduleNameOrPath) {
 }
 
 inline bool IsStreamlineModuleNameForFeatureHooking(const char* moduleNameOrPath) {
-    const char* baseName = PathBaseName(moduleNameOrPath);
+    char providedName[128] = {};
+    if (!ce::graphics_runtime::ResolveStreamlineProvidedDllName(moduleNameOrPath, providedName, sizeof(providedName)))
+        return false;
+    const char* baseName = providedName;
     const size_t baseNameLength = StringLength(baseName);
     return baseNameLength > 7 && HasPrefixIgnoreCaseAscii(baseName, "sl.") &&
            HasSuffixIgnoreCaseAscii(baseName, ".dll");
@@ -429,11 +433,23 @@ inline ViewportRuntimeUpdate BuildViewportRuntimeUpdateFromGetState(
 
 inline GetStateRuntimeEvaluation EvaluateViewportRuntimeUpdateFromGetState(
     bool callSucceeded, bool hasOptions, bool viewportWasActive, bool hasRuntimeFenceEvidence,
-    bool suppressNewActivation, uint32_t mode, uint32_t requestedGeneratedFrames, uint32_t capabilityMax) {
+    bool suppressNewActivation, uint32_t mode, uint32_t requestedGeneratedFrames, uint32_t capabilityMax,
+    uint32_t actuallyPresented = 0, uint32_t runtimeStatus = 0, uint64_t completionFenceValue = 0) {
     GetStateRuntimeEvaluation evaluation;
     evaluation.update =
         BuildViewportRuntimeUpdateFromGetState(callSucceeded, hasOptions, viewportWasActive, hasRuntimeFenceEvidence,
                                                suppressNewActivation, mode, requestedGeneratedFrames, capabilityMax);
+
+    // Late injection misses SetOptions. A status-only reply can still prove that
+    // interpolation occurred. A capability or allocated fence alone cannot: both
+    // remain available while DLSS-G is idle. Never infer OFF from a transient 1x
+    // reply or override an explicit option / protected runtime transition.
+    if (callSucceeded && !hasOptions && !viewportWasActive && !suppressNewActivation &&
+        hasRuntimeFenceEvidence && completionFenceValue != 0 && runtimeStatus == 0 &&
+        actuallyPresented > 1 && actuallyPresented <= 6 && capabilityMax >= actuallyPresented - 1) {
+        evaluation.update = BuildViewportRuntimeUpdateFromRequestedOptions(
+            true, true, 1, actuallyPresented - 1, capabilityMax);
+    }
 
     const bool attemptedFreshActivation = callSucceeded && hasOptions && IsDLSSGModeEnabled(mode) && !viewportWasActive;
     evaluation.suppressedFreshActivation =

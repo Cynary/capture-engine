@@ -159,8 +159,29 @@ bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1A
     // there, the deep body hook is the safe choice for both entries — it works whether or not
     // a foreign patch is present, whereas an ordinary prepend on an entry that turns out to be
     // shared is exactly what this mode exists to avoid.
-    if (InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1, PublishDeepPresent1Body, nullptr,
-                                             observedPresentEntryPatchSize)) {
+    void* deepPresent1Body = nullptr;
+    for (int attempt = 1; attempt <= kDeepPresentBodyInstallAttempts; ++attempt) {
+        const auto unstablePolicy = (attempt == kDeepPresentBodyInstallAttempts)
+                                        ? ce::hook_patch::UnstableSnapshotPolicy::kAcceptSuspendedSet
+                                        : ce::hook_patch::UnstableSnapshotPolicy::kRefuse;
+        deepPresent1Body = InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1,
+                                                              PublishDeepPresent1Body, nullptr,
+                                                              observedPresentEntryPatchSize, unstablePolicy);
+        if (deepPresent1Body) {
+            HookLogImportant("InstallPresentInlineHooks: Present1 body hook installed on attempt %d", attempt);
+            break;
+        }
+        const auto failure = InlineHook::GetLastDeepHookQuiesceFailure();
+        if (!ce::hook_patch::IsRetryableQuiesceFailure(failure)) {
+            HookLogImportant("InstallPresentInlineHooks: Present1 body hook refused (%s); not retrying",
+                             ce::hook_patch::GetQuiesceFailureName(failure));
+            break;
+        }
+        HookLogImportant("InstallPresentInlineHooks: Present1 body hook attempt %d/%d refused (%s)",
+                         attempt, kDeepPresentBodyInstallAttempts,
+                         ce::hook_patch::GetQuiesceFailureName(failure));
+    }
+    if (deepPresent1Body) {
         dxgi_shared_oPresent1Bypass = dxgi_shared_oPresent1DeepBody;
         HookLogImportant(
             "InstallPresentInlineHooks: Present1 deep body hook installed below the foreign chain "

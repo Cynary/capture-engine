@@ -6,6 +6,10 @@ Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Attaching to an existing D3D12 swapchain:** defer backbuffer work until the presentation queue is known. Recover a missing association only from a native DXGI submission inside that swapchain’s Present call, on the same device; unrelated game and overlay submissions cannot supply it.
+- **Present1 hook installation:** retry transient thread-snapshot failures with the same bounded policy used for Present, instead of silently losing Present1 capture for the session.
+- **DLSS plugins loaded from NVIDIA’s cache:** recognize the provided Streamline identity behind hashed DLL filenames when discovering, pinning and invalidating feature hooks. Late attachment can recover active interpolation from a successful status reply with completion-fence and multiple-present evidence, while preserving explicit options and teardown guards.
+
 - **HDR when attaching to a running DXGI game:** query the swapchain’s current colour space when no successful declaration has been observed. The optional Windows inspection interface is checked with `QueryInterface`; unsupported implementations retain the existing fallback.
 
 - **HDR changes between capture sessions:** keep successful swapchain colour-space changes recorded while the resident hook is dormant. Reconnecting now uses the current HDR/SDR state instead of the previous session’s state.

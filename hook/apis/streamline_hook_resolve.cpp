@@ -54,9 +54,8 @@ public:
         }
         const uint64_t generationBefore =
             streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
-        HMODULE featureModule = GetModuleHandleA(featureModuleName);
         HMODULE interposerModule = GetModuleHandleA("sl.interposer.dll");
-        if (!featureModule || !interposerModule) {
+        if (!interposerModule) {
             return;  // no plugin / no interposer: nothing to resolve through
         }
         // Pin EVERY loaded Streamline runtime module, not only the interposer and the queried
@@ -96,7 +95,10 @@ public:
             if (pinned == interposerModule) {
                 interposerPinned = true;
             }
-            if (pinned == featureModule) {
+            char providedName[128] = {};
+            if (ce::graphics_runtime::ResolveStreamlineProvidedDllName(
+                    moduleNameOrPath, providedName, sizeof(providedName)) &&
+                ce::streamline_runtime_policy::EqualsIgnoreCaseAscii(providedName, featureModuleName)) {
                 featureModulePinned = true;
             }
         } while (Module32Next(snapshot, &entry));

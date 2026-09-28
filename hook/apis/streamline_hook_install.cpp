@@ -220,7 +220,10 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
 
     RegisterDynamicHooksOnce();
 
-    const char* moduleBaseName = GetModuleBaseName(moduleNameOrPath);
+    char providedName[128] = {};
+    if (!ce::graphics_runtime::ResolveStreamlineProvidedDllName(moduleNameOrPath, providedName, sizeof(providedName)))
+        return false;
+    const char* moduleBaseName = providedName;
     // Establish the ABI before anything is patched. slSetTag and slEvaluateFeature are the
     // only exports whose signature changed between Streamline generations, and installing
     // the wrong one truncates the caller's arguments on the way back into Streamline.
