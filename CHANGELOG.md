@@ -6,6 +6,8 @@ Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Diagnosing FrameGen after late attachment:** include status-only DLSS-G replies in the bounded debug log, so missing activation state can be distinguished from missing runtime fence evidence. The DLSS test app also stops labelling a single presented frame as active interpolation.
+
 - **DirectX 12 resize synchronization:** keep the overlay mutex owned across every frame-processing phase, preventing resize cleanup from racing capture/drawing and making the later transition unlock/relock operate on an owned lock.
 - **Generated-frame capture timing:** publish the measured capture callback time separately from the recording presentation schedule, so streaming consumers can diagnose capture delays without treating future presentation times as measurements. Shared-memory ABI 63 requires matching producer and consumer builds.
 

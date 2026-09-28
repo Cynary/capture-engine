@@ -384,12 +384,12 @@ static bool PollDLSSFGState() {
     sl::DLSSGState state = {};
     sl::Result ret = g_SlDLSSGGetState(g_SlViewport, state, nullptr);
     testapp::Log(
-        "[FG-DIAG] slDLSSGGetState ret=%d (%s) vramUsage=%llu status=%u genFrames=%u maxGen=%u dynamicMFG=%d\n",
+        "[FG-DIAG] slDLSSGGetState ret=%d (%s) vramUsage=%llu status=%u presentedFrames=%u maxGen=%u dynamicMFG=%d\n",
         static_cast<int>(ret), SlResultName(ret), (unsigned long long)state.estimatedVRAMUsageInBytes,
         static_cast<uint32_t>(state.status), state.numFramesActuallyPresented, state.numFramesToGenerateMax,
         static_cast<int>(state.bIsDynamicMFGSupported));
-    if (ret == sl::Result::eOk && state.numFramesActuallyPresented > 0) {
-        testapp::Log("[FG-DIAG] DLSS FG active: %u generated frames\n", state.numFramesActuallyPresented);
+    if (ret == sl::Result::eOk && state.numFramesActuallyPresented > 1) {
+        testapp::Log("[FG-DIAG] DLSS FG interpolation observed: %u total presented frames\n", state.numFramesActuallyPresented);
         return true;
     }
     testapp::LogFlush();

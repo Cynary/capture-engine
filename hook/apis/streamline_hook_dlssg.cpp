@@ -40,7 +40,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
         ce::streamline_runtime_policy::ShouldClearAllViewportRuntimeStatesForGetStateDisable(
             result == streamline_hook_kSlResultOk, streamline_hook_options != nullptr, hasRuntimeFenceEvidence, streamline_hook_options ? streamline_hook_options->mode : 0u,
             capabilityMax);
-    if (result == streamline_hook_kSlResultOk && streamline_hook_options != nullptr) {
+    if (result == streamline_hook_kSlResultOk) {
         static std::atomic<int> s_getStateTraceLogCount{0};
         const int logCount = s_getStateTraceLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 8 || (logCount % 512) == 0) {
@@ -53,8 +53,9 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
                 "fence=%p fenceValue=%llu viewportWasActive=%d update=%d "
                 "updateActive=%d clearAll=%d suppressNew=%d fenceEvidence=%d setOptionsHooked=%d "
                 "setOptionsOriginal=%p",
-                viewportKey, GetDLSSGModeName(streamline_hook_options->mode), streamline_hook_options->mode, streamline_hook_options->numFramesToGenerate,
-                capabilityMax, state.numFramesActuallyPresented, state.status, statusText, state.minWidthOrHeight,
+                viewportKey, streamline_hook_options ? GetDLSSGModeName(streamline_hook_options->mode) : "unspecified",
+                streamline_hook_options ? streamline_hook_options->mode : 0u,
+                streamline_hook_options ? streamline_hook_options->numFramesToGenerate : 0u, capabilityMax, state.numFramesActuallyPresented, state.status, statusText, state.minWidthOrHeight,
                 ce::streamline_runtime_policy::ResolveDLSSGStateOptionalBool(
                     state.structVersion, ce::streamline_runtime_policy::kDLSSGStateVsyncSupportMinVersion,
                     state.bIsVsyncSupportAvailable, streamline_hook_kSLBooleanInvalid),
