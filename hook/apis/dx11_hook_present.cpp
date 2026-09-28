@@ -129,6 +129,7 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
 }
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    g_DeferredRelease.ProcessThreadAffine();
     // Dormant hooks remain installed so game-held and foreign-hook pointers stay
     // valid. Forward before diagnostics or config reads can touch retired host
     // state.
@@ -255,8 +256,9 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT PresentFlags,
                                              const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
-    // CRITICAL: Check for shutdown first - if app is closing, don't touch
-    // anything
+    g_DeferredRelease.ProcessThreadAffine();
+    // The release queue owns its references independently of the host session.
+    // Do not touch host configuration or capture state while dormant.
     if (HookIsShuttingDown()) {
         return CallOriginalPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
     }

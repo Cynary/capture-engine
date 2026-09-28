@@ -176,7 +176,8 @@ TEST(InjectCaptureSourceTest, D3D11CleanupOwnsImmediateContextAndSerializesCaptu
     ASSERT_FALSE(cleanup.empty());
     ASSERT_FALSE(capture.empty());
 
-    EXPECT_NE(cleanup.find("g_DeferredRelease.Queue(cachedContext)"), std::string::npos);
+    EXPECT_NE(cleanup.find("g_DeferredRelease.Queue(cachedContext, releaseThreadId)"), std::string::npos);
+    EXPECT_NE(capture.find("g_DeferredRelease.ProcessThreadAffine()"), std::string::npos);
     EXPECT_NE(capture.find("std::try_to_lock"), std::string::npos);
     EXPECT_NE(capture.find("static std::atomic<int> s_captureFrameCount"), std::string::npos);
     EXPECT_NE(capture.find("FindAvailableCaptureTextureSlot"), std::string::npos);

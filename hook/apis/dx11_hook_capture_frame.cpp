@@ -38,6 +38,8 @@ void ResetCaptureSlotStarvation() {
 }  // namespace
 
 bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
+    // Wrapper and shared DXGI routing can bypass DetourDX11Present.
+    g_DeferredRelease.ProcessThreadAffine();
 
 
         std::unique_lock<std::recursive_mutex> captureLock(captureMutex, std::try_to_lock);

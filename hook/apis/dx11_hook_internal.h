@@ -215,6 +215,7 @@ public:
     bool copyQueryIssued[CAPTURE_TEXTURE_COUNT]{};
     ID3D11Device* cachedDevice = nullptr;
     ID3D11DeviceContext* cachedContext = nullptr;
+    DWORD releaseThreadId = 0;  // Nonzero for a single-threaded capture device.
     IUnknown* cachedSwapChainIdentity = nullptr;
     bool generationResetPending = false;
 

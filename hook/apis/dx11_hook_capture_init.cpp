@@ -23,6 +23,8 @@ bool DX11Capture::InitDX10(IDXGISwapChain* swapChain) {
         }
 
         cachedDevice10 = device10;  // Keep GetDevice() reference until Cleanup()
+        releaseThreadId = (device10->GetCreationFlags() & D3D10_CREATE_DEVICE_SINGLETHREADED)
+                              ? GetCurrentThreadId() : 0;
 
         if (SUCCEEDED(device10->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
@@ -290,6 +292,9 @@ void DX11Capture::Init(ID3D11Device* device,  IDXGISwapChain* swapChain) {
                 dxgiDevice->Release();
             }
             cachedDevice = device;
+            releaseThreadId = (device->GetCreationFlags() & D3D11_CREATE_DEVICE_SINGLETHREADED)
+                                  ? GetCurrentThreadId() : 0;
+            HookLog("DX11 capture resource release owner: thread=%lu (0=worker)", releaseThreadId);
             device->GetImmediateContext(&cachedContext);
 
             // Detect DXVK: if d3d11.dll is not from System32, this is DXVK.
