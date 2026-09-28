@@ -15,7 +15,7 @@ TEST(DX12PresentQueueRecovery, DefersBackbufferProcessingUntilQueueIsKnown) {
 }
 
 TEST(DX12PresentQueueRecovery, RequiresNativePresentSubmissionOnMatchingDevice) {
-    const auto source = ce::test_source::ReadFile("hook/apis/dx12_hook_present_queue_recovery.cpp");
+    const auto source = ce::test_source::ReadFile("hook/apis/dx12_hook_ecl.cpp");
     const auto publish = source.find("DX12_SetSwapchainQueue(queue, false, false, false, swapchain)");
     ASSERT_NE(publish, std::string::npos);
     const auto checks = source.substr(0, publish);

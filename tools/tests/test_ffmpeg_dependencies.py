@@ -410,7 +410,9 @@ class DependencyBuildPolicyShellTest(unittest.TestCase):
             result = self._run_recipe(directory)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("UPSTREAM_BUILD_RAN", result.stdout)
-            self.assertEqual(header.read_text(), "#if defined(_MSC_VER) && _MSC_VER < 1400\n#define shim old_crt\n#endif\n")
+            self.assertEqual(
+                header.read_text(), "#if defined(_MSC_VER) && _MSC_VER < 1400\n#define shim old_crt\n#endif\n"
+            )
             header.write_text("#if unexpected_condition\n#endif\n", encoding="utf-8", newline="\n")
             result = self._run_recipe(directory)
             self.assertNotEqual(result.returncode, 0)

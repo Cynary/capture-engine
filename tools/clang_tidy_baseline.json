@@ -21,7 +21,7 @@
     "  bugprone-exception-escape                 destructors; see git log for rationale"
   ],
   "checks": {
-    "clang-analyzer-core.CallAndMessage": 25,
+    "clang-analyzer-core.CallAndMessage": 22,
     "clang-analyzer-core.NullDereference": 1,
     "clang-diagnostic-cast-function-type-mismatch": 56,
     "clang-diagnostic-deprecated-declarations": 2,
@@ -34,7 +34,7 @@
     "clang-diagnostic-missing-designated-field-initializers": 12,
     "clang-diagnostic-missing-field-initializers": 150,
     "clang-diagnostic-missing-format-attribute": 222,
-    "clang-diagnostic-shadow": 827,
+    "clang-diagnostic-shadow": 826,
     "clang-diagnostic-sign-compare": 7,
     "clang-diagnostic-undefined-inline": 35,
     "clang-diagnostic-unknown-pragmas": 89,
@@ -43,9 +43,9 @@
     "clang-diagnostic-unused-private-field": 106,
     "clang-diagnostic-unused-variable": 82
   },
-  "total": 1931,
+  "total": 1927,
   "scope": {
-    "entries": 796,
+    "entries": 801,
     "translation_units": [
       "captureengine/clr_interop.cpp",
       "captureengine/display_timing_service.cpp",
@@ -671,10 +671,13 @@
       "tests/test_dx12_fg_trace_replay.cpp",
       "tests/test_dx12_fg_transition_sequences.cpp",
       "tests/test_dx12_inline_upload_slots.cpp",
+      "tests/test_dx12_present_queue_recovery.cpp",
       "tests/test_dx12_process_frame_diagnostics.cpp",
       "tests/test_dx12_sampler_policy.cpp",
       "tests/test_dx12_temp_swapchain_diagnostics.cpp",
       "tests/test_dx12_upload_slot_guard.cpp",
+      "tests/test_dxgi_color_query.cpp",
+      "tests/test_dxgi_presentation_color.cpp",
       "tests/test_dxgi_shared.cpp",
       "tests/test_dxgi_shared_access_denied_dump.cpp",
       "tests/test_dxgi_shared_fifo_recovery.cpp",
@@ -806,6 +809,8 @@
       "tests/test_startup_stall_hazards.cpp",
       "tests/test_streamline_api_generation.cpp",
       "tests/test_streamline_bridge_policy.cpp",
+      "tests/test_streamline_late_runtime.cpp",
+      "tests/test_streamline_ngx_discovery.cpp",
       "tests/test_streamline_runtime_policy.cpp",
       "tests/test_streamline_runtime_policy_part2.cpp",
       "tests/test_strict_integer_parse.cpp",

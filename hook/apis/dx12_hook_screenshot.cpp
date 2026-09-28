@@ -164,7 +164,7 @@ if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
     slot.fenceValue = desc.fenceValue;
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     slot.timestamp = desc.presentTime;
-    slot.captureObservedQpc = ResolveCaptureObservedQpc(metadata, desc.presentTime);
+    slot.captureObservedQpc = ResolveCaptureObservedQpc(metadata, slot.timestamp);
     slot.displayTimingSequence = metadata ? metadata->displayTimingSequence : 0;
     slot.frameIndex = desc.frameNumber;
     slot.textureIndex = desc.textureIndex;

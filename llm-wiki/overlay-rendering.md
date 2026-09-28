@@ -616,7 +616,7 @@ is a separate integration requirement.
 
 `dx12_hook_process_session.cpp` must not initialize capture from a guessed queue
 when `g_SwapchainQueue` is absent. Native Present must run first.
-`dx12_hook_present_queue_recovery.cpp`, called by the ECL detour, accepts only
+`dx12_hook_ecl.cpp`, called by the ECL detour, accepts only
 native DXGI DIRECT submissions inside the current thread’s Present scope,
 with matching devices and no CE-owned submission recursion. It rechecks the
 missing association under `g_CommandQueueMutex` before publishing. Existing
