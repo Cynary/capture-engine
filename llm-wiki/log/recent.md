@@ -1,10 +1,16 @@
 # llm-wiki Log
 
+### 2026-09-28 — initial DXGI colour-space recovery
+
+`dxgi_swapchain_color_query.h` queries the private Windows inspection IID also used by ReShade. It reads `GetColorSpace1` only after a successful `QueryInterface`, validates the enum, releases the interface, and leaves the caller’s output unchanged on failure. No object offsets or DLL addresses are embedded. `DXGIShared::QuerySwapChainColorSpace` prefers successful setter tracking and uses this query only when that tracking is unavailable. Queried reads are not cached: doing so could overwrite a newer concurrent setter. `RecordSwapChainColorSpace` compares only recorded private data so a successful setter still publishes even if the native getter already reports the new value. Diagnostics are bounded to five initial queries per process.
+
+Three native mock-interface tests cover live value changes, unsupported/null inputs, invalid enums and reference balance. A separate real D3D11 flip-discard probe returned SDR → PQ → SDR exactly. The combined native product/unit gate passed. In a fresh Stellar Blade process already in HDR gameplay before injection, the first capture delivered 2,446/2,446 HDR 4K R10 frames without toggling HDR. After enabling 2x DLSS, a reconnect delivered 2,877/2,877 HDR final-output frames. These runs prove metadata/routing, not every generated frame’s pixel correctness or encoder integration. This resolves the initial-declaration limitation noted in the entry below on the tested Windows DXGI implementation; other implementations may not expose the private interface.
+
 ### 2026-09-28 — HDR metadata across resident-hook dormancy
 
 `DetourSetColorSpace1` rejected metadata publication while `HookIsShuttingDown()` was true, including the normal dormant interval after a consumer disconnect. The wrapper already recorded successful calls in that interval. Removed the inline-only gate; exactly-once wrapper ownership and HRESULT validation remain. Metadata is swapchain private data, independent of capture resources.
 
-Native combined build/unit gate passed. The source lifecycle regression fails with the old shutdown gate restored and passes with it removed. The hook itself is not linked into the unit executable, so the source assertion is supplemented by a live Stellar Blade disconnect → HDR Off/On → reconnect test: all 2,876 frames carried HDR from the first frame. A subsequent loaded-game probe delivered 2,877 HDR final-output frames with 2x DLSS enabled; this verifies metadata/routing, not the pixel correctness of every interpolated frame. Initial late attachment can still miss a colour-space declaration made before injection; that separate limitation remains unresolved.
+Native combined build/unit gate passed. The source lifecycle regression fails with the old shutdown gate restored and passes with it removed. The hook itself is not linked into the unit executable, so the source assertion is supplemented by a live Stellar Blade disconnect → HDR Off/On → reconnect test: all 2,876 frames carried HDR from the first frame. A subsequent loaded-game probe delivered 2,877 HDR final-output frames with 2x DLSS enabled; this verifies metadata/routing, not the pixel correctness of every interpolated frame. At this stage, initial late attachment still missed declarations made before injection; the subsequent initial-query entry above addresses that separate limitation.
 
 ### 2026-09-28 — direct-capture reconnect and preserved-swapchain resize
 

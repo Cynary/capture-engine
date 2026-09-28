@@ -6,6 +6,8 @@ Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **HDR when attaching to a running DXGI game:** query the swapchain’s current colour space when no successful declaration has been observed. The optional Windows inspection interface is checked with `QueryInterface`; unsupported implementations retain the existing fallback.
+
 - **HDR changes between capture sessions:** keep successful swapchain colour-space changes recorded while the resident hook is dormant. Reconnecting now uses the current HDR/SDR state instead of the previous session’s state.
 
 - **Diagnosing late D3D12 capture:** optional queue tracing now identifies the active swapchain and CaptureEngine-owned submissions, distinguishing presentation work from unrelated frame-generation queues.

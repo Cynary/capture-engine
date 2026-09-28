@@ -595,3 +595,19 @@ HDR startup and an off → DLSS 2x → off transition passed in a live Stellar B
 menu run, with capture continuing through both transitions and clean game exit.
 This is not proof that every intermittent resize failure is resolved. Existing
 resize HRESULT and buffer-descriptor diagnostics remain the runtime evidence.
+
+## Initial swapchain colour space (2026-09-28)
+
+`hook/common/dxgi_shared.cpp` uses recorded successful `SetColorSpace1` calls first.
+For late attachment without a recorded declaration,
+`hook/common/dxgi_swapchain_color_query.h` optionally reads the current value via
+the private Windows inspection interface used by ReShade. Always negotiate it
+through `QueryInterface`; its absence is normal and retains the format-policy
+fallback. Do not infer PQ from an R10 buffer alone. Do not cache a queried value
+over setter tracking, or a concurrent HDR/SDR change can be lost.
+
+`DXGIColorQueryTest` checks enum validation, unsupported interfaces and lifetime.
+A native swapchain test and late attachment to real HDR gameplay verified the
+query; subsequent DLSS capture retained HDR final-output metadata. The private
+interface is not a public SDK guarantee. Encoded generated-frame pixel validation
+is a separate integration requirement.

@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "dxgi_swapchain_color_query.h"
 
 // Put shutdown check outside the DXGIShared namespace
 bool IsShuttingDown() {
@@ -16,7 +17,7 @@ constexpr GUID kCESwapChainColorSpaceGuid = {
 }
 
 namespace DXGIShared {
-bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace) {
+static bool ReadTrackedSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace) {
     if (!swapChain)
         return false;
     int storedColorSpace = 0;
@@ -32,6 +33,24 @@ bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& 
 }
 
 namespace DXGIShared {
+bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace) {
+    if (ReadTrackedSwapChainColorSpace(swapChain, colorSpace))
+        return true;
+    const bool queried = ce::presentation_color::TryQueryCurrentSwapChainColorSpace(swapChain, colorSpace);
+    if (swapChain) {
+        static std::atomic<unsigned> s_queryLogCount{0};
+        if (s_queryLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant("DXGI: Initial color-space query sc=%p available=%d cs=%d",
+                             swapChain, queried ? 1 : 0, queried ? static_cast<int>(colorSpace) : -1);
+        }
+    }
+    // Do not cache the read: a concurrent SetColorSpace1 could otherwise be
+    // overwritten by this older observation. Successful setters retain state.
+    return queried;
+}
+}
+
+namespace DXGIShared {
 bool RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE colorSpace, bool* changed) {
     if (changed) {
         *changed = false;
@@ -41,7 +60,7 @@ bool RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE 
     }
 
     DXGI_COLOR_SPACE_TYPE previousColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-    if (QuerySwapChainColorSpace(swapChain, previousColorSpace) && previousColorSpace == colorSpace) {
+    if (ReadTrackedSwapChainColorSpace(swapChain, previousColorSpace) && previousColorSpace == colorSpace) {
         return true;
     }
 
