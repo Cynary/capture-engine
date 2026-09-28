@@ -310,6 +310,7 @@ public:
 
         // Write frame metadata
         slot.timestamp = timestamp;
+        slot.captureObservedQpc = timestamp;
         slot.displayTimingSequence = 0;
         slot.textureIndex = textureIndex;
         slot.fenceValue = gpuFenceValue;

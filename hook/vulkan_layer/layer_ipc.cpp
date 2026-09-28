@@ -652,6 +652,7 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
         ring.slots[slot].sourcePid = GetCurrentProcessId();
         ring.slots[slot].fenceValue = 0;
         ring.slots[slot].captureFlags = SHARED_FRAME_CAPTURE_NONE;
+        ring.slots[slot].captureObservedQpc = 0;
         ring.slots[slot].displayTimingGeneration = 0;
         ring.slots[slot].valid.store(1, std::memory_order_release);
     }
@@ -719,6 +720,7 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_
     }
 
     ring.slots[slot].timestamp = timestampQpc;
+    ring.slots[slot].captureObservedQpc = ResolveCaptureObservedQpc(metadata, timestampQpc);
     ring.slots[slot].displayTimingSequence = metadata ? metadata->displayTimingSequence : 0;
     ring.slots[slot].frameIndex = wIdx;
     ring.slots[slot].textureIndex = textureIndex;  // >= 100 indicates SHMEM mode

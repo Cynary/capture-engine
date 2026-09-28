@@ -78,6 +78,7 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, sizeof(FrameRingBuffer));
     hash = MixSharedMemoryAbiValue(hash, sizeof(FrameSlot));
     hash = MixSharedMemoryAbiValue(hash, offsetof(FrameSlot, timestamp));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(FrameSlot, captureObservedQpc));
     hash = MixSharedMemoryAbiValue(hash, offsetof(FrameSlot, displayTimingSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(FrameSlot, captureFlags));
     hash = MixSharedMemoryAbiValue(hash, offsetof(FrameSlot, displayTimingGeneration));
@@ -142,7 +143,7 @@ static_assert(alignof(CaptureState) >= 8, "CaptureState must be 8-byte aligned f
 static_assert((FRAME_RING_SIZE & (FRAME_RING_SIZE - 1)) == 0, "FRAME_RING_SIZE must be power of 2");
 
 // Ensure FrameSlot is properly sized for cache efficiency
-static_assert(sizeof(FrameSlot) == 48, "FrameSlot should be 48 bytes - update if struct changes");
+static_assert(sizeof(FrameSlot) == 56, "FrameSlot should be 56 bytes - update if struct changes");
 
 // Validate shared memory header is at offset 0
 // Note: offsetof is technically UB for non-standard-layout types (like those with atomics),

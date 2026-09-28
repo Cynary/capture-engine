@@ -29,14 +29,25 @@ enum SharedFrameCaptureFlags : uint32_t {
 
 struct FrameCaptureMetadata {
     int64_t timestampQpc = 0;
+    int64_t captureObservedQpc = 0;  // Measured callback time; never the virtual presentation schedule.
     uint64_t displayTimingSequence = 0;
     uint32_t displayTimingGeneration = 0;
     uint32_t captureFlags = SHARED_FRAME_CAPTURE_NONE;
 };
 
+inline int64_t ResolveCaptureObservedQpc(const FrameCaptureMetadata* metadata, int64_t ordinaryTimestamp) {
+    if (metadata && metadata->captureObservedQpc > 0)
+        return metadata->captureObservedQpc;
+    // A legacy generated-output timestamp is a schedule, not a measurement.
+    if (metadata && (metadata->captureFlags & SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT))
+        return 0;
+    return ordinaryTimestamp;
+}
+
 struct alignas(8) FrameSlot {
     uint64_t fenceValue;                  // GPU fence value for synchronization
     int64_t timestamp;                    // QPC timestamp (ticks, not ms - use QPCToMs for conversion)
+    int64_t captureObservedQpc;           // Measured capture/callback QPC; zero if unavailable
     uint64_t displayTimingSequence;       // SharedDisplayTiming publication watermark
     uint32_t frameIndex;                  // Sequential frame number from hook
     int32_t textureIndex;                 // Index of shared texture (0..SHARED_TEXTURE_SLOT_COUNT-1)

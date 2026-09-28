@@ -4,6 +4,7 @@
 #include <string>
 
 #include "source_fragment_reader.h"
+#include "../common/shared_defs.h"
 
 namespace {
 
@@ -151,4 +152,17 @@ TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSenso
         << "the collector must arm from intent before inject capture becomes live";
     EXPECT_NE(recording.find("recoverProcess(ProcessMode::Sensors"), std::string::npos)
         << "the exact-timing child must recover during a live recording";
+}
+
+TEST(FinalOutputCaptureSourceTest, MeasuredCaptureClockDoesNotUseGeneratedPresentationSchedule) {
+    FrameCaptureMetadata metadata{};
+    metadata.timestampQpc = 130000;
+    metadata.captureObservedQpc = 100000;
+    metadata.captureFlags = SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT;
+    EXPECT_EQ(ResolveCaptureObservedQpc(&metadata, metadata.timestampQpc), 100000);
+    metadata.captureObservedQpc = 0;
+    EXPECT_EQ(ResolveCaptureObservedQpc(&metadata, metadata.timestampQpc), 0);
+    metadata.captureFlags = SHARED_FRAME_CAPTURE_NONE;
+    EXPECT_EQ(ResolveCaptureObservedQpc(&metadata, 99000), 99000);
+    EXPECT_EQ(ResolveCaptureObservedQpc(nullptr, 99000), 99000);
 }

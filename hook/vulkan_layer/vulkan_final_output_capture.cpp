@@ -75,6 +75,7 @@ VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptu
         ce::capture_policy::NextFinalOutputTimestampQpc(state.timeline, callbackQpc, qpcFrequency,
                                                        observedOutputFps, false);
     }
+    plan.metadata.captureObservedQpc = callbackQpc;
     plan.metadata.timestampQpc = ce::capture_policy::NextFinalOutputTimestampQpc(
         state.timeline, callbackQpc, qpcFrequency, observedOutputFps,
         meteredBatchOutput);

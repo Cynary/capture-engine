@@ -97,6 +97,7 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
 
     const int64_t qpcFrequency = GetQpcFrequency();
     const int64_t callbackQpc = GetCurrentQpc();
+    plan.metadata.captureObservedQpc = callbackQpc;
     const float outputFps = GetObservedFinalOutputFps();
     const int currentMultiplier = std::clamp(g_FGCompat.GetFGMultiplier(), 2, 4);
     const int previousMultiplier =
