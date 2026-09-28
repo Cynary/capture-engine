@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "../common/present_queue_trace.h"
 #include "../common/pacing_trace.h"
 
 #include "../common/fg_cost_probe.h"
@@ -114,8 +115,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         // OSD stops submitting in Strange Brigade while the game keeps ~1200 fps).
         if (sn < 80 || (sn % 64) == 0) {
             char d[200];
-            _snprintf_s(d, sizeof(d), _TRUNCATE, "queue=%p numLists=%u list0=%p seq=%d", (void*)pThis, NumCommandLists,
-                        (NumCommandLists && ppCommandLists) ? (void*)ppCommandLists[0] : nullptr, sn);
+            _snprintf_s(d, sizeof(d), _TRUNCATE, "queue=%p numLists=%u list0=%p seq=%d presentSwapchain=%p ceSubmit=%d", (void*)pThis, NumCommandLists,
+                        (NumCommandLists && ppCommandLists) ? (void*)ppCommandLists[0] : nullptr, sn,
+                        (void*)ce::present_queue_trace::currentSwapchain, dx12_hook_s_insideCEOverlayECLDepth > 0);
             Dx12TraceLog("ExecuteCommandLists", d);
         }
     }

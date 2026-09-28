@@ -221,3 +221,23 @@ are those. Nothing above the generator is touched, no timer is added and no driv
   (`ShouldSkipWindowForNvPresent`); whether that path has the same proxy topology is unverified.
 - CE's factory wrapper is what sees the application-facing create. A game that reaches the real DXGI factory without
   it would leave CE with no app-facing view at all under an interposer; not observed, but not ruled out.
+
+## Late-attach queue diagnostics (2026-09-28)
+
+`present_queue_trace.h` carries thread-local, nested-scope swapchain identity
+through `DetourPresent` and `DetourPresent1`. With `CE_DX12_TRACE` enabled,
+`dx12_hook_ecl.cpp` appends `presentSwapchain` and `ceSubmit` to sampled queue
+submissions. This is diagnostic evidence, not an automatic queue-adoption rule.
+CaptureEngine-owned submissions must be excluded when inferring ownership.
+
+An isolated DX12/Streamline fixture, launched on an already-active streaming
+virtual display and then injected, showed one queue submitting inside the native
+swapchain's Present. Other Streamline/game queues had no enclosing Present.
+The call trail for in-Present submissions entered from DXGI through co-resident
+RTSS interception. Do not infer ownership from the originating module name alone.
+
+Late activation recovery alone was tested separately and rejected: recognizing
+positive DLSS status selected PostSL without a known swapchain queue or wrapper,
+and capture stopped progressing normally. Recovering the presentation route is
+also required. Neither this trace nor its single fixture validates arbitrary
+late injection in games. Automatic already-running-target protection remains.

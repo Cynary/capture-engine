@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "present_queue_trace.h"
 #include "fg_cost_probe.h"
 #include "hook_cpu_cost.h"
 #include "pacing_trace_boundary.h"
@@ -382,6 +383,7 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    ce::present_queue_trace::Scope queueTraceScope(pSwapChain);
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Detour, pSwapChain, SyncInterval, Flags);
     ce::present_association::NotePresentEntry(PerfLogger::GetQpcUs());
     if (!pSwapChain)

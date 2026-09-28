@@ -6,6 +6,8 @@ Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Diagnosing late D3D12 capture:** optional queue tracing now identifies the active swapchain and CaptureEngine-owned submissions, distinguishing presentation work from unrelated frame-generation queues.
+
 - **Diagnosing FrameGen after late attachment:** include status-only DLSS-G replies in the bounded debug log, so missing activation state can be distinguished from missing runtime fence evidence. The DLSS test app also stops labelling a single presented frame as active interpolation.
 
 - **DirectX 12 resize synchronization:** keep the overlay mutex owned across every frame-processing phase, preventing resize cleanup from racing capture/drawing and making the later transition unlock/relock operate on an owned lock.
