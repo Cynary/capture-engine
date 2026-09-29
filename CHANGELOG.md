@@ -10,6 +10,10 @@ Changes since [v0.1.6757](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Launcher overlay coexistence:** intercept legacy factory creation below the foreign entry chain as well, preventing circular CreateSwapChain calls when Ubisoft’s overlay initializes after capture.
+
+- **32-bit games crashing when capture attaches after launch:** intercept DXGI resize calls below Steam/RTSS entry hooks instead of replacing their shared COM slots. This avoids circular resize calls while preserving buffer-flag reconciliation. Add x86 body interception for verified Windows frame prologues, also allowing Present capture on existing swapchains with multiple overlays.
+
 - **D3D11 games freezing after capture reconnect:** retire capture resources on their owning render thread when the game uses a single-threaded device. Background destruction violated that device contract; Overcooked 2 could freeze a few frames into the next session. Thread-safe devices retain worker cleanup.
 
 - **Attaching to an existing D3D12 swapchain:** defer backbuffer work until the presentation queue is known. Recover a missing association only from a native DXGI submission inside that swapchain’s Present call, on the same device; unrelated game and overlay submissions cannot supply it.

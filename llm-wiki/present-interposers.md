@@ -240,4 +240,34 @@ Late activation recovery alone was tested separately and rejected: recognizing
 positive DLSS status selected PostSL without a known swapchain queue or wrapper,
 and capture stopped progressing normally. Recovering the presentation route is
 also required. Neither this trace nor its single fixture validates arbitrary
-late injection in games. Automatic already-running-target protection remains.
+late injection in games. Consumers must validate the actual graphics route; this
+fixture alone is not a compatibility guarantee.
+
+
+## x86 late attachment and resize interception (2026-09-28)
+
+Overcooked 2 with Steam and RTSS exposed a circular ResizeBuffers chain after
+late injection. CE replaced the shared COM slot while saving the DXGI entry.
+Steam later saved a trampoline into CE's resize detour; the DXGI entry still
+entered Steam. A full-memory capture confirmed that exact cycle. A minidump
+without code pages misleadingly displayed pristine DXGI bytes from disk.
+
+Resize reconciliation now uses body interception and leaves the COM slot and
+foreign entry bytes untouched. `inline_hook_deep_x86.cpp` supports the standard
+Windows hotpatch/frame prologue: restore EBP before the detour and replay the
+original prologue in its continuation. Unknown layouts and relative branches
+are refused; publication and patching use the existing thread-quiescence and
+retained-trampoline ownership rules. This also enables the existing Present
+body-hook path on x86.
+
+Validation: the formerly crashing late Overcooked attachment delivered over
+3,600 frames; reconnecting to that process delivered another 1,800+. Epic's
+Alan Wake Remastered was discovered without a configured executable and
+delivered direct frames after a launcher URI start. These are concrete tested
+routes, not evidence that every graphics API or protected game permits hooks.
+
+Avatar through Ubisoft Connect exposed the same ownership problem on legacy
+`IDXGIFactory::CreateSwapChain`: the saved predecessor was the DXGI entry and
+the crash stack repeatedly re-entered Ubisoft's overlay from CE. That slot now
+also stays untouched, with interception below the entry chain. A new launch
+delivered more than 4,800 direct frames after this change.

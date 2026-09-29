@@ -4,6 +4,19 @@ namespace ce::inline_hook_policy {
 
 inline constexpr int kExternalPrependPatchSize = 5;
 
+// Only this frame setup can be undone with a single pop ebp. In particular,
+// never accept stack alignment/allocation or register writes beyond it.
+inline int X86DeepHookFramePrologueLength(const unsigned char* bytes, int length) {
+    if (!bytes || length < 3)
+        return 0;
+    const int padding = bytes[0] == 0x8b && bytes[1] == 0xff ? 2 : 0;
+    if (length < padding + 3 || bytes[padding] != 0x55)
+        return 0;
+    const bool setsFrame = (bytes[padding + 1] == 0x8b && bytes[padding + 2] == 0xec) ||
+                          (bytes[padding + 1] == 0x89 && bytes[padding + 2] == 0xe5);
+    return setsFrame ? padding + 3 : 0;
+}
+
 inline bool IsPrependChainableEntryJump(unsigned char firstByte, unsigned char secondByte, bool is64Bit) {
     return firstByte == 0xE9 || (is64Bit && firstByte == 0xFF && secondByte == 0x25);
 }

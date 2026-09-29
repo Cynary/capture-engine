@@ -239,6 +239,21 @@ TEST(SwapchainFlagPolicySourceTest, ResizeDetoursNeverReenterTheirOwnVTableSlot)
     EXPECT_EQ(shared.find(")vtable[39]"), std::string::npos);
 }
 
+TEST(SwapchainFlagPolicySourceTest, ForeignOverlayDiscoverySeesUnmodifiedResizeAndLegacyFactorySlots) {
+    const std::string hooks = ReadSource("hook/common/dxgi_shared_hooks.cpp");
+    const size_t start = hooks.find("bool InstallResizeReconciliationHooks(");
+    const size_t end = hooks.find("bool ReconcilesApplicationResizeFlags()", start);
+    ASSERT_NE(start, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const std::string resize = hooks.substr(start, end - start);
+    EXPECT_EQ(resize.find("ClaimSwapchainVTableSlot"), std::string::npos);
+    EXPECT_NE(resize.find("InstallDeepHookPublished"), std::string::npos);
+    const std::string factory = ReadSource("hook/apis/dx12_hook_hook_install.cpp");
+    ASSERT_FALSE(factory.empty());
+    EXPECT_EQ(factory.find("VTableHook::Create(reinterpret_cast<void*>(&vtable[10])"), std::string::npos);
+    EXPECT_NE(factory.find("InstallDeepHookPublished(vtable[10]"), std::string::npos);
+}
+
 // The device the game presents through is discovered from its command queue,
 // which does not depend on CE having seen D3D12CreateDevice. That is the only
 // discovery that survives an injection later than the game's graphics init.

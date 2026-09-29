@@ -138,11 +138,14 @@ dx12_hook_s_realCreateSCForHwndAddr = realCreateSCForHwndAddr;
 // (see dx12_factory_slot_policy.h); a proxied factory is a different class.
 dx12_hook_s_savedCreateSwapChainForHwndVtable = vtable;
 
-// Hook CreateSwapChain (vtable[10] for IDXGIFactory)
-// Hook CreateSwapChainForHwnd (vtable[15] for IDXGIFactory2)
-if (VTableHook::Create(reinterpret_cast<void*>(&vtable[10]), (LPVOID)DetourCreateSwapChainGlobal,
-                       (LPVOID*)&dx12_hook_oCreateSwapChainGlobal) == VTableHook::Success) {
-    HookLog("DX12: Hooked global CreateSwapChain at vtable[10]");
+// Leave the legacy COM slot unchanged. Overlay installers discover this
+// address dynamically; replacing it lets them save CE while CE saves their
+// entry chain, creating recursion during later swapchain creation.
+if (!dx12_hook_oCreateSwapChainGlobal) {
+    InlineHook::InstallDeepHookPublished(vtable[10], (void*)DetourCreateSwapChainGlobal,
+        [](void* trampoline, void*) {
+            dx12_hook_oCreateSwapChainGlobal = reinterpret_cast<PFN_CreateSwapChain>(trampoline);
+        }, nullptr, sizeof(void*) == 4 ? 5 : 14);
 }
 
 if (VTableHook::Create(reinterpret_cast<void*>(&vtable[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal,
@@ -162,9 +165,8 @@ if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory4)))) {
     HookLog("DX12: IDXGIFactory4 available, vtable=%p (IDXGIFactory2=%p, same=%d)", vtable4, vtable,
             (int)(vtable4 == vtable));
     if (vtable4 != vtable) {  // Different vtable pointer
-        VTableHook::Create(reinterpret_cast<void*>(&vtable4[10]), (LPVOID)DetourCreateSwapChainGlobal, nullptr);
         VTableHook::Create(reinterpret_cast<void*>(&vtable4[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
-        HookLog("DX12: Hooked IDXGIFactory4 vtable[10] and vtable[15]");
+        HookLog("DX12: Hooked IDXGIFactory4 vtable[15]");
     }
     pFactory4->Release();
 } else {
@@ -177,9 +179,8 @@ if (SUCCEEDED(pCreateFactory(IID_PPV_ARGS(&pFactory6)))) {
     HookLog("DX12: IDXGIFactory6 available, vtable=%p (IDXGIFactory2=%p, same=%d)", vtable6, vtable,
             (int)(vtable6 == vtable));
     if (vtable6 != vtable) {  // Different vtable pointer
-        VTableHook::Create(reinterpret_cast<void*>(&vtable6[10]), (LPVOID)DetourCreateSwapChainGlobal, nullptr);
         VTableHook::Create(reinterpret_cast<void*>(&vtable6[15]), (LPVOID)DetourCreateSwapChainForHwndGlobal, nullptr);
-        HookLog("DX12: Hooked IDXGIFactory6 vtable[10] and vtable[15]");
+        HookLog("DX12: Hooked IDXGIFactory6 vtable[15]");
     }
     pFactory6->Release();
 } else {

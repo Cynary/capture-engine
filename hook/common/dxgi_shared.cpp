@@ -466,7 +466,6 @@ void** dxgi_shared_s_hookedVTable = nullptr;
 
 namespace DXGIShared {
 // Swapchain vtable CE claimed the ResizeBuffers/ResizeBuffers1 slots on.
-void** dxgi_shared_s_resizeHookedVTable = nullptr;
 }
 
 namespace DXGIShared {

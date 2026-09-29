@@ -135,3 +135,11 @@ void LogDeepHookPatchOutcome(const void* resumeCode, bool patchInstalled, bool a
                              ce::hook_patch::QuiesceFailure quiesceFailure, bool ownershipChanged, DWORD patchError);
 
 }  // namespace InlineHook
+
+namespace InlineHook {
+bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count, size_t* relocationsApplied);
+#ifndef _WIN64
+void* InstallDeepHookX86(void* target, void* wrapperFn, void (*publisher)(void*, void*), void* publisherContext,
+                         int minimumExternalPatchSize, ce::hook_patch::UnstableSnapshotPolicy unstablePolicy);
+#endif
+}

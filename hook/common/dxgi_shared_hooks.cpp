@@ -278,71 +278,45 @@ bool ClaimSwapchainVTableSlot(void** vtable, size_t index, void* detour, Functio
 }
 
 namespace DXGIShared {
-// CE adds DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT to the
-// application's creation descriptor for `backbuffer_count`, and DXGI then
-// rejects every application ResizeBuffers call whose flags disagree with the
-// created chain in that bit (see swapchain_flag_policy.h). Hiding the flag
-// again therefore is not optional, and it must not depend on any of the
-// decisions CE makes about Present: a foreign Present chain, a preserved real
-// swapchain identity, or a runtime-owned chain all leave the application
-// calling ResizeBuffers on the real object.
-//
-// The ResizeBuffers/ResizeBuffers1 slots are independent of the contested
-// Present entry, and all DXGI swapchains in a process share one
-// CDXGISwapChain vtable, so one claim covers every chain — including chains
-// created before or after this call, and chains CE never wraps.
+// Reconcile resize flags below the entry hook chain. Replacing the COM slot
+// changes the target that other overlays discover: Steam can save our detour
+// while our predecessor still enters Steam, forming an infinite recursion.
+// A body hook leaves both the COM slot and foreign entry bytes unchanged.
 bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* source) {
-    if (!pSwapChain) {
+    if (!pSwapChain || IsWrappedSwapChainObject(pSwapChain))
         return false;
-    }
-
     std::lock_guard<std::mutex> installLock(g_SharedMutex);
-
-    void** vtable = *(void***)pSwapChain;
-    if (!vtable) {
-        HookLog("DXGIShared::InstallResizeReconciliationHooks: Invalid vtable (source=%s)",
-                source ? source : "unknown");
+    void** vtable = *reinterpret_cast<void***>(pSwapChain);
+    if (!vtable)
         return false;
+    constexpr int entrySpan = sizeof(void*) == 4 ? 5 : 14;
+    if (!dxgi_shared_oResizeBuffersReconcile) {
+        InlineHook::InstallDeepHookPublished(vtable[13], (void*)DetourResizeBuffersReconcileOnly,
+            [](void* trampoline, void*) {
+                dxgi_shared_oResizeBuffersReconcile = reinterpret_cast<PFN_ResizeBuffers>(trampoline);
+            }, nullptr, entrySpan);
     }
-    if (dxgi_shared_s_resizeHookedVTable == vtable) {
-        return true;
+    IDXGISwapChain3* modern = nullptr;
+    bool modernReady = true;
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&modern)))) {
+        void* resize1 = (*reinterpret_cast<void***>(modern))[39];
+        modern->Release();
+        if (!dxgi_shared_oResizeBuffers1Reconcile) {
+            InlineHook::InstallDeepHookPublished(resize1, (void*)DetourResizeBuffers1ReconcileOnly,
+                [](void* trampoline, void*) {
+                    dxgi_shared_oResizeBuffers1Reconcile = reinterpret_cast<PFN_ResizeBuffers1>(trampoline);
+                }, nullptr, entrySpan);
+        }
+        modernReady = dxgi_shared_oResizeBuffers1Reconcile != nullptr;
     }
-    if (dxgi_shared_s_resizeHookedVTable) {
-        // The detours use one predecessor set; replacing it while the old vtable
-        // can still reach CE would route in-flight resizes through the wrong
-        // implementation. The established claim keeps covering its own chains.
-        HookLogImportant(
-            "DXGIShared::InstallResizeReconciliationHooks: Preserving established resize claim old=%p new=%p "
-            "(source=%s)",
-            dxgi_shared_s_resizeHookedVTable, vtable, source ? source : "unknown");
-        return true;
-    }
-
-    DWORD oldProtect;
-    if (!VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        HookLogImportant("DXGIShared::InstallResizeReconciliationHooks: VirtualProtect failed (source=%s)",
-                         source ? source : "unknown");
-        return false;
-    }
-
-    const bool resizeClaimed = ClaimSwapchainVTableSlot(vtable, 13, (void*)DetourResizeBuffersReconcileOnly,
-                                                       &dxgi_shared_oResizeBuffersReconcile, "ResizeBuffers");
-    if (resizeClaimed) {
-        dxgi_shared_s_resizeHookedVTable = vtable;
-        ClaimSwapchainVTableSlot(vtable, 39, (void*)DetourResizeBuffers1ReconcileOnly,
-                                 &dxgi_shared_oResizeBuffers1Reconcile, "ResizeBuffers1");
-    }
-
-    VirtualProtect(reinterpret_cast<void*>(vtable), 40 * sizeof(void*), oldProtect, &oldProtect);
-    HookLogImportant(
-        "DXGIShared::InstallResizeReconciliationHooks: resize flag reconciliation %s (source=%s vtable=%p) — "
-        "backbuffer_count may%s add the waitable object to application swapchains",
-        resizeClaimed ? "ready" : "UNAVAILABLE", source ? source : "unknown", vtable, resizeClaimed ? "" : " NOT");
-    return resizeClaimed;
+    const bool ready = dxgi_shared_oResizeBuffersReconcile && modernReady;
+    HookLogImportant("DXGIShared: resize reconciliation below foreign hooks %s source=%s",
+                     ready ? "ready" : "unavailable", source ? source : "unknown");
+    return ready;
 }
 
 bool ReconcilesApplicationResizeFlags() {
-    return dxgi_shared_s_resizeHookedVTable != nullptr;
+    return dxgi_shared_oResizeBuffersReconcile != nullptr && dxgi_shared_oResizeBuffers1Reconcile != nullptr;
 }
 }
 

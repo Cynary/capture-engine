@@ -224,5 +224,4 @@ namespace DXGIShared {
 // DXGI swapchains in a process share one CDXGISwapChain vtable, so a single
 // claim covers every chain, including the ones CE deliberately hands to the
 // application unwrapped.
-extern void** dxgi_shared_s_resizeHookedVTable;
 }

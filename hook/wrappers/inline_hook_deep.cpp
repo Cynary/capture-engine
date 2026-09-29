@@ -48,7 +48,7 @@ namespace InlineHook {
 
 // Read original (unpatched) function bytes from the DLL file and apply the
 // module's image-base relocations so absolute operands match the loaded image.
-static bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count, size_t* relocationsApplied) {
+bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count, size_t* relocationsApplied) {
     if (relocationsApplied)
         *relocationsApplied = 0;
     HMODULE hMod = nullptr;
@@ -180,11 +180,7 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
                                  void* publisherContext, int minimumExternalPatchSize,
                                  ce::hook_patch::UnstableSnapshotPolicy unstablePolicy) {
 #ifndef _WIN64
-    (void)publisher;
-    (void)publisherContext;
-    (void)minimumExternalPatchSize;
-    HookLog("DeepHook: Only supported on x64");
-    return nullptr;
+    return InstallDeepHookX86(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize, unstablePolicy);
 #else
     if (!target || !wrapperFn)
         return nullptr;

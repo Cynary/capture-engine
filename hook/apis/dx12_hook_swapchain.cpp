@@ -152,11 +152,8 @@ void RemoveGlobalVTableHooks() {
 
     void** vtable = *(void***)pFactory;
 
-    if (dx12_hook_oCreateSwapChainGlobal) {
-        VTableHook::Remove(reinterpret_cast<void*>(&vtable[10]), (void*)dx12_hook_oCreateSwapChainGlobal);
-        HookLog("DX12: Removed CreateSwapChain vtable hook");
-        dx12_hook_oCreateSwapChainGlobal = nullptr;
-    }
+    // Legacy CreateSwapChain uses a body hook, removed by InlineHook::RemoveAll.
+    // Keep its callable continuation resident for in-flight foreign chains.
 
     if (dx12_hook_oCreateSwapChainForHwndGlobal) {
         VTableHook::Remove(reinterpret_cast<void*>(&vtable[15]), (void*)dx12_hook_oCreateSwapChainForHwndGlobal);
